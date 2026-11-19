@@ -1,0 +1,72 @@
+@import 'tailwindcss';
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+    --font-sans: 'Inter', 'Noto Sans Bengali', system-ui, sans-serif;
+    --font-display: 'Poppins', 'Noto Sans Bengali', system-ui, sans-serif;
+    --color-page: var(--erp-page);
+    --color-surface: var(--erp-surface);
+    --color-line: var(--erp-line);
+    --color-ink: var(--erp-ink);
+    --color-muted: var(--erp-muted);
+    --color-brand: var(--erp-brand);
+    --color-on-brand: var(--erp-on-brand);
+    --color-danger: var(--erp-danger);
+    --color-selected: var(--erp-selected);
+}
+
+:root {
+    color-scheme: light;
+    --erp-page: #f5f7fa;
+    --erp-surface: #ffffff;
+    --erp-line: #dde4ed;
+    --erp-ink: #0a1428;
+    --erp-muted: #4a5568;
+    --erp-brand: #0b63ce;
+    --erp-on-brand: #ffffff;
+    --erp-danger: #be123c;
+    --erp-selected: #eaf3ff;
+}
+
+.dark {
+    color-scheme: dark;
+    --erp-page: #0a1428;
+    --erp-surface: #111e34;
+    --erp-line: #31415a;
+    --erp-ink: #f5f7fa;
+    --erp-muted: #afc0d6;
+    --erp-brand: #38a8ff;
+    --erp-on-brand: #0a1428;
+    --erp-danger: #fda4af;
+    --erp-selected: #172f50;
+}
+
+html:has(.ui-slide-over[open]) {
+    overflow: hidden;
+}
+
+body {
+    @apply bg-page font-sans text-ink antialiased;
+}
+
+:focus-visible {
+    @apply outline-2 outline-offset-1 outline-brand;
+}
+
+@layer components {
+    .ui-button {
+        @apply inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-sm font-medium transition-colors hover:bg-selected disabled:cursor-not-allowed disabled:opacity-50 md:h-7 md:text-[13px];
+    }
+
+    .ui-button-primary {
+        @apply border-transparent bg-brand text-on-brand hover:bg-brand/90;
+    }
+
+    .ui-button-icon {
+        @apply w-9 px-0 md:w-7;
+    }
+
+    .ui-input {
+        @apply h-9 w-full rounded-md border border-line bg-surface px-2 text-sm aria-invalid:border-danger md:h-7 md:text-[13px];
+    }
+}
