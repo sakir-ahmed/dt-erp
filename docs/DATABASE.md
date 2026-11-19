@@ -6,7 +6,8 @@ ERP uses MySQL for deployed installations and supports SQLite for local developm
 
 | Tables | Purpose |
 | --- | --- |
-| `products` | SKU, name, unit, fixed-point BDT sale price, and active state. SKU is unique within regular or demo records. |
+| `products` | SKU, name, unit, fixed-point BDT sale price, active state, and stock on hand in integer thousandths of its unit. SKU is unique within regular or demo records. |
+| `stock_movements` | Product and actor, signed quantity change, resulting balance, reason, timestamp, and a retry key unique per product. |
 | `users` | User identity, unique email, hashed password, and local demo account marker |
 | `sessions`, `password_reset_tokens` | Laravel session storage and scaffold password-reset storage |
 | `roles`, `permissions`, `model_has_roles`, `model_has_permissions`, `role_has_permissions` | Company-wide Spatie authorization |

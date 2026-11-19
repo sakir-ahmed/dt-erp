@@ -5,6 +5,7 @@ import AppIcon from '../../components/AppIcon.vue';
 import DataTable from '../../components/ui-kit/DataTable.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
+import SearchBar from '../../components/ui-kit/SearchBar.vue';
 import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
@@ -35,6 +36,7 @@ const columns = computed(() => {
     return tableColumns;
 });
 const query = ref(props.search);
+const searching = ref(false);
 const open = ref(false);
 const editing = ref(null);
 const form = useForm({ sku: '', name: '', unit: '', sale_price: '', active: true });
@@ -49,7 +51,11 @@ const formId = useId();
 
 function filter() {
     const search = query.value.trim();
-    router.get('/products', search ? { search } : {}, { preserveScroll: true });
+    router.get('/products', search ? { search } : {}, {
+        preserveScroll: true,
+        onStart: () => { searching.value = true; },
+        onFinish: () => { searching.value = false; },
+    });
 }
 
 function edit(product = null) {
@@ -92,11 +98,7 @@ function save() {
         </PageHeader>
 
         <div class="rounded-lg border border-line bg-surface">
-            <form role="search" class="flex flex-wrap items-center gap-2 border-b border-line p-3" @submit.prevent="filter">
-                <input v-model="query" type="search" maxlength="100" class="ui-input max-w-60" :aria-label="page.props.labels.search_products" :placeholder="page.props.labels.search_products">
-                <button type="submit" class="ui-button ui-button-icon" :aria-label="page.props.labels.search_products"><AppIcon name="search" /></button>
-                <Link v-if="search" href="/products" class="ui-button">{{ page.props.labels.clear }}</Link>
-            </form>
+            <SearchBar v-model="query" :label="page.props.labels.search_products" :clear-label="page.props.labels.clear" :has-filter="Boolean(search)" :busy="searching" @search="filter" />
 
             <template v-if="products.data.length">
                 <DataTable :columns="columns" :rows="products.data">

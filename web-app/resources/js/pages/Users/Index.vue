@@ -2,8 +2,10 @@
 import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3';
 import { computed, nextTick, ref, useId } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import DataTable from '../../components/ui-kit/DataTable.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
+import SearchBar from '../../components/ui-kit/SearchBar.vue';
 import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
@@ -17,6 +19,21 @@ const props = defineProps({
 
 const page = usePage();
 const query = ref(props.search);
+const searching = ref(false);
+const columns = computed(() => {
+    const labels = page.props.labels;
+    const tableColumns = [
+        { key: 'name', label: labels.name },
+        { key: 'email', label: labels.email },
+        { key: 'roles', label: labels.role },
+    ];
+
+    if (props.canManageUsers) {
+        tableColumns.push({ key: 'actions', label: labels.edit_staff, align: 'right', hideLabel: true, headerClass: 'w-12' });
+    }
+
+    return tableColumns;
+});
 const modalOpen = ref(false);
 const editingId = ref(null);
 const form = useForm({ name: '', email: '', password: '' });
@@ -33,7 +50,12 @@ const range = computed(() => {
 });
 
 function searchUsers() {
-    router.get('/users', query.value.trim() ? { search: query.value.trim() } : {}, { preserveState: true, preserveScroll: true });
+    router.get('/users', query.value.trim() ? { search: query.value.trim() } : {}, {
+        preserveState: true,
+        preserveScroll: true,
+        onStart: () => { searching.value = true; },
+        onFinish: () => { searching.value = false; },
+    });
 }
 
 function openUser(user = null) {
@@ -87,49 +109,29 @@ function roleLabels(user) {
         </PageHeader>
 
         <div class="rounded-lg border border-line bg-surface">
-            <form role="search" class="flex flex-wrap items-center gap-2 border-b border-line p-3" @submit.prevent="searchUsers">
-                <input v-model="query" type="search" maxlength="100" :aria-label="page.props.labels.search_users" :placeholder="page.props.labels.search_users" class="ui-input max-w-64">
-                <button type="submit" class="ui-button ui-button-icon" :aria-label="page.props.labels.search_users"><AppIcon name="search" /></button>
-                <button v-if="search" type="button" class="ui-button" @click="query = ''; searchUsers()">{{ page.props.labels.clear }}</button>
-            </form>
+            <SearchBar v-model="query" :label="page.props.labels.search_users" :clear-label="page.props.labels.clear" :has-filter="Boolean(search)" :busy="searching" @search="searchUsers" />
 
             <template v-if="users.data.length">
-                <table class="hidden w-full table-fixed text-start text-[13px] md:table">
-                    <thead class="border-b border-line bg-page/60 text-xs text-muted">
-                        <tr>
-                            <th scope="col" class="h-8 px-3 text-start">{{ page.props.labels.name }}</th>
-                            <th scope="col" class="h-8 px-3 text-start">{{ page.props.labels.email }}</th>
-                            <th scope="col" class="h-8 px-3 text-start">{{ page.props.labels.role }}</th>
-                            <th v-if="canManageUsers" scope="col" class="w-12"><span class="sr-only">{{ page.props.labels.edit_staff }}</span></th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-line">
-                        <tr v-for="user in users.data" :key="user.id" class="hover:bg-selected">
-                            <td class="h-8 truncate px-3 font-medium" :title="user.name">{{ user.name }}</td>
-                            <td class="h-8 truncate px-3" :title="user.email">{{ user.email }}</td>
-                            <td class="h-8 px-3">
+                <DataTable :columns="columns" :rows="users.data">
+                    <template #cell(name)="{ value }"><p class="max-w-56 truncate font-medium" :title="value">{{ value }}</p></template>
+                    <template #cell(email)="{ value }"><p class="max-w-72 truncate" :title="value">{{ value }}</p></template>
+                    <template #cell(roles)="{ row }">
+                        <span v-for="role in roleLabels(row)" :key="role" class="me-1 inline-block rounded-md bg-selected px-2 text-xs leading-5 text-brand">{{ role }}</span>
+                    </template>
+                    <template #cell(actions)="{ row }">
+                        <button v-if="row.editable" type="button" class="size-6 rounded-md hover:bg-surface" :aria-label="`${page.props.labels.edit_staff} · ${row.name}`" @click="openUser(row)"><AppIcon name="edit" /></button>
+                    </template>
+                    <template #card="{ row: user }">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <p class="font-semibold wrap-anywhere">{{ user.name }}</p>
+                                <p class="text-muted wrap-anywhere">{{ user.email }}</p>
                                 <span v-for="role in roleLabels(user)" :key="role" class="me-1 inline-block rounded-md bg-selected px-2 text-xs leading-5 text-brand">{{ role }}</span>
-                            </td>
-                            <td v-if="canManageUsers" class="px-2 text-right">
-                                <button v-if="user.editable" type="button" class="size-6 rounded-md hover:bg-surface" :aria-label="`${page.props.labels.edit_staff} · ${user.name}`" @click="openUser(user)">
-                                    <AppIcon name="edit" />
-                                </button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-                <ul class="divide-y divide-line md:hidden">
-                    <li v-for="user in users.data" :key="user.id" class="flex items-start justify-between gap-2 p-3 text-[13px]">
-                        <div class="min-w-0">
-                            <p class="font-semibold wrap-anywhere">{{ user.name }}</p>
-                            <p class="text-muted wrap-anywhere">{{ user.email }}</p>
-                            <span v-for="role in roleLabels(user)" :key="role" class="me-1 inline-block rounded-md bg-selected px-2 text-xs leading-5 text-brand">{{ role }}</span>
+                            </div>
+                            <button v-if="user.editable" type="button" class="ui-button ui-button-icon shrink-0" :aria-label="`${page.props.labels.edit_staff} · ${user.name}`" @click="openUser(user)"><AppIcon name="edit" /></button>
                         </div>
-                        <button v-if="user.editable" type="button" class="ui-button ui-button-icon shrink-0" :aria-label="`${page.props.labels.edit_staff} · ${user.name}`" @click="openUser(user)">
-                            <AppIcon name="edit" />
-                        </button>
-                    </li>
-                </ul>
+                    </template>
+                </DataTable>
                 <div class="flex flex-wrap items-center justify-between gap-2 border-t border-line p-3 text-xs text-muted">
                     <span>{{ range }}</span>
                     <div class="flex gap-2">

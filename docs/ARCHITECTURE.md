@@ -25,10 +25,10 @@ The web app has an Inertia dashboard shell, English and Bangla localization, the
 
 | Role | Workspace access |
 | --- | --- |
-| Administrator | Dashboard, staff account management, and product catalog management |
-| Staff | Dashboard and read-only product catalog |
+| Administrator | Dashboard, staff and catalog management, and stock movements |
+| Staff | Dashboard, read-only product catalog, and stock history |
 
-Existing accounts keep dashboard access. Access to the user directory requires `users.view`. Creating or editing staff accounts requires `users.manage`. Administrator accounts are provisioned in the terminal. Demo administrators have read-only access to demo accounts and can manage demo catalog records. Regular accounts use a separate catalog. Additional permissions will be defined with their workflows.
+Existing accounts keep dashboard access. Access to the user directory requires `users.view`. Creating or editing staff accounts requires `users.manage`. Administrator accounts are provisioned in the terminal. Demo administrators have read-only access to demo accounts and can manage demo catalog records. Regular accounts use a separate catalog. Stock posting requires `stock.manage` and stays in the same catalog as the signed-in account. Additional permissions will be defined with their workflows.
 
 ## Local demo sign-in
 
