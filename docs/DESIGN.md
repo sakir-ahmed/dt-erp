@@ -22,3 +22,11 @@ Use the shared `SlideOver` for create and edit workflows, following Restora's In
 ## Save feedback
 
 Show successful saves as a Sonner toast for three seconds. Use the top-right corner on desktop and top-center on phones. Use operation-specific messages for creation and updates. Keep validation errors beside their fields.
+
+## Workspace shell
+
+The desktop sidebar can collapse to 56 px and remembers its width on the device. The mobile sidebar uses a modal drawer with the same permission-filtered links. The top bar shows the current Dhaka date and time on desktop. The account menu shows the signed-in user's name, email, roles, and sign-out action. The login panel uses the same locale and theme controls and includes a password visibility toggle.
+
+## Search and row actions
+
+Use the shared search field for server-filtered lists. Submitting a search starts at the first page, and clearing the filter restores the full list. A product row opens its stock history. An editable user row opens the staff account form. Keep the primary row action available as a real link or button for keyboard users. Independent row actions, such as editing a product, retain their own controls. Apply the same behavior to mobile record cards.
