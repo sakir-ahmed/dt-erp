@@ -8,6 +8,13 @@ use Illuminate\Database\Eloquent\Collection;
 
 class LocalQuickSignIn
 {
+    public const array ROLES = [WorkspaceRole::Administrator, WorkspaceRole::Staff];
+
+    public static function demoEnabled(): bool
+    {
+        return ! app()->isProduction() && config('erp.demo_login') === true;
+    }
+
     public static function email(WorkspaceRole $role): string
     {
         return "local-{$role->value}@erp.example.invalid";
@@ -26,7 +33,7 @@ class LocalQuickSignIn
     {
         return User::query()
             ->where('is_demo', false)
-            ->whereIn('email', array_map(self::email(...), WorkspaceRole::cases()))
+            ->whereIn('email', array_map(self::email(...), self::ROLES))
             ->when($userId !== null, fn ($query) => $query->whereKey($userId))
             ->orderBy('id')
             ->get()

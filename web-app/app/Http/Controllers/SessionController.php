@@ -16,8 +16,11 @@ class SessionController extends Controller
 {
     public function create(Request $request): Response
     {
+        $demo = LocalQuickSignIn::demoEnabled();
+
         return Inertia::render('Login', [
-            'localQuickSignInUsers' => fn () => User::localQuickSignInEnabled($request)
+            'quickSignInPath' => $demo ? '/login/demo' : '/login/local',
+            'localQuickSignInUsers' => fn () => $demo || User::localQuickSignInEnabled($request)
                 ? LocalQuickSignIn::eligibleAccounts()->map->only(['id', 'name'])->values()
                 : [],
         ]);

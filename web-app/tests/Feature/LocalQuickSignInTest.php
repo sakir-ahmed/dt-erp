@@ -147,3 +147,42 @@ it('rejects a quick sign-in post without a CSRF token', function () {
     $this->post(route('login.local'), ['user_id' => $staff->id])->assertStatus(419);
     $this->assertGuest();
 });
+
+it('lists and authenticates only verified fixtures on the demo route', function () {
+    $this->seed(LocalQuickSignInSeeder::class);
+    $staff = LocalQuickSignIn::eligibleAccounts()->last();
+    $unrelated = User::factory()->create();
+    config(['app.debug' => false, 'erp.demo_login' => true]);
+    $origin = 'https://erp.example.com';
+
+    $this->withoutVite()->get($origin.'/login')->assertInertia(fn (Assert $page) => $page
+        ->where('quickSignInPath', '/login/demo')->has('localQuickSignInUsers', 2));
+
+    $this->withSession(['_token' => 'demo-token'])
+        ->post($origin.'/login/demo', ['user_id' => $unrelated->id, '_token' => 'demo-token'])
+        ->assertNotFound();
+    $this->assertGuest();
+
+    $this->post($origin.'/login/demo', ['user_id' => $staff->id, '_token' => 'demo-token'])
+        ->assertRedirect(route('dashboard'))
+        ->assertSessionHas('_token', fn (string $token) => $token !== 'demo-token');
+    $this->assertAuthenticatedAs($staff);
+});
+
+it('blocks demo login when disabled or in production', function (bool $enabled, string $environment) {
+    $this->seed(LocalQuickSignInSeeder::class);
+    $staff = LocalQuickSignIn::eligibleAccounts()->last();
+    $this->app->detectEnvironment(fn () => $environment);
+    config(['erp.demo_login' => $enabled]);
+    $origin = 'https://erp.example.com';
+
+    $this->withoutVite()->get($origin.'/login')->assertInertia(fn (Assert $page) => $page
+        ->has('localQuickSignInUsers', 0));
+    $this->withSession(['_token' => 'demo-token'])
+        ->post($origin.'/login/demo', ['user_id' => $staff->id, '_token' => 'demo-token'])
+        ->assertNotFound();
+    $this->assertGuest();
+})->with([
+    'disabled' => [false, 'local'],
+    'production' => [true, 'production'],
+]);

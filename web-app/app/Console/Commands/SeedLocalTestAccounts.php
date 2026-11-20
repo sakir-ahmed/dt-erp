@@ -14,15 +14,17 @@ class SeedLocalTestAccounts extends Command
 
     public function handle(LocalQuickSignInSeeder $seeder): int
     {
-        if (! LocalQuickSignInSeeder::canSeed()) {
-            $this->error('This command requires a local environment, debug mode, a loopback APP_URL, and an application key.');
+        $refresh = (bool) $this->option('refresh');
+
+        if (! LocalQuickSignInSeeder::canSeed($refresh)) {
+            $this->error('Use local quick sign-in, or enable ERP demo login and pass --refresh. An application key is required.');
 
             return self::FAILURE;
         }
 
         $previousKey = null;
 
-        if ($this->option('refresh')) {
+        if ($refresh) {
             if (! $this->input->isInteractive()) {
                 $this->error('Run the refresh in an interactive terminal.');
 

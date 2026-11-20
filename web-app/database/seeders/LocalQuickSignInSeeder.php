@@ -3,21 +3,21 @@
 namespace Database\Seeders;
 
 use App\Actions\LocalQuickSignIn;
-use App\Enums\WorkspaceRole;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 class LocalQuickSignInSeeder extends Seeder
 {
-    public static function canSeed(): bool
+    public static function canSeed(bool $refresh = false): bool
     {
-        return User::localQuickSignInEnabled() && filled(config('app.key'));
+        return filled(config('app.key'))
+            && (User::localQuickSignInEnabled() || ($refresh && LocalQuickSignIn::demoEnabled()));
     }
 
     public function run(?string $previousKey = null): void
     {
-        if (! self::canSeed()) {
+        if (! self::canSeed($previousKey !== null)) {
             return;
         }
 
@@ -29,7 +29,7 @@ class LocalQuickSignInSeeder extends Seeder
 
         $this->call(DatabaseSeeder::class);
 
-        foreach (WorkspaceRole::cases() as $role) {
+        foreach (LocalQuickSignIn::ROLES as $role) {
             DB::transaction(function () use ($role) {
                 $email = LocalQuickSignIn::email($role);
                 $user = User::query()->firstOrCreate(
@@ -51,7 +51,7 @@ class LocalQuickSignInSeeder extends Seeder
     private function refreshFixtures(string $previousKey): void
     {
         DB::transaction(function () use ($previousKey) {
-            foreach (WorkspaceRole::cases() as $role) {
+            foreach (LocalQuickSignIn::ROLES as $role) {
                 $email = LocalQuickSignIn::email($role);
                 $user = User::query()->where('email', $email)->where('is_demo', false)->lockForUpdate()->first();
                 $password = LocalQuickSignIn::fixturePassword($email);

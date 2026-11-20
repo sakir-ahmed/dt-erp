@@ -12,7 +12,9 @@ class LocalQuickSignInController extends Controller
 {
     public function __invoke(Request $request): RedirectResponse
     {
-        abort_unless(User::localQuickSignInEnabled($request), 404);
+        abort_unless($request->routeIs('login.demo')
+            ? LocalQuickSignIn::demoEnabled()
+            : User::localQuickSignInEnabled($request), 404);
 
         $userId = filter_var($request->input('user_id'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
         abort_if($userId === false, 404);

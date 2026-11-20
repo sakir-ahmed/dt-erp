@@ -19,6 +19,9 @@ Route::middleware('guest')->group(function () {
     Route::post('/login/local', LocalQuickSignInController::class)
         ->middleware('throttle:10,1')
         ->name('login.local');
+    Route::post('/login/demo', LocalQuickSignInController::class)
+        ->middleware('throttle:10,1')
+        ->name('login.demo');
     Route::post('/login', [SessionController::class, 'store'])
         ->middleware('throttle:10,1')
         ->name('login.store');

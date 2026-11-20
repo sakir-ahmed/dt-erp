@@ -5,15 +5,16 @@ import AppIcon from '../components/AppIcon.vue';
 import FormField from '../components/ui-kit/FormField.vue';
 import WorkspacePreferences from '../components/WorkspacePreferences.vue';
 
-defineProps({
+const props = defineProps({
     localQuickSignInUsers: { type: Array, default: () => [] },
+    quickSignInPath: { type: String, default: '/login/local' },
 });
 
 const page = usePage();
 const localSignInForm = useForm({ user_id: null });
 function signInAs(userId) {
     localSignInForm.user_id = userId;
-    localSignInForm.post('/login/local');
+    localSignInForm.post(props.quickSignInPath);
 }
 const form = useForm({ email: '', password: '' });
 const emailInput = ref(null);
