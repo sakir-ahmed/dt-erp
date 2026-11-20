@@ -14,10 +14,10 @@ use Inertia\Response;
 
 class SessionController extends Controller
 {
-    public function create(): Response
+    public function create(Request $request): Response
     {
         return Inertia::render('Login', [
-            'localQuickSignInUsers' => fn () => User::localQuickSignInEnabled()
+            'localQuickSignInUsers' => fn () => User::localQuickSignInEnabled($request)
                 ? LocalQuickSignIn::eligibleAccounts()->map->only(['id', 'name'])->values()
                 : [],
         ]);

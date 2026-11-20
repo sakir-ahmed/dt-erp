@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\LocalQuickSignIn;
 use App\Enums\WorkspacePermission;
 use App\Enums\WorkspaceRole;
 use App\Models\User;
@@ -11,7 +12,59 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     $this->app->detectEnvironment(fn () => 'local');
-    config(['app.debug' => true, 'erp.demo_login' => false]);
+    config(['app.debug' => true, 'app.url' => 'http://localhost', 'erp.demo_login' => false]);
+});
+
+it('refreshes only proven fixtures and can be rerun', function () {
+    $collidingUser = User::factory()->create(['email' => LocalQuickSignIn::email(WorkspaceRole::Administrator)]);
+    $original = $collidingUser->fresh()->getRawOriginal();
+    $currentKey = config('app.key');
+    config(['app.key' => 'previous-fixture-test-key']);
+    $this->seed(LocalQuickSignInSeeder::class);
+    config(['app.key' => $currentKey]);
+
+    expect(LocalQuickSignIn::eligibleAccounts())->toHaveCount(0);
+
+    $this->artisan('erp:test-accounts:seed --refresh')
+        ->expectsQuestion('Previous APP_KEY used to seed the fixtures', 'wrong-key')
+        ->assertFailed();
+
+    $this->artisan('erp:test-accounts:seed --refresh')
+        ->expectsQuestion('Previous APP_KEY used to seed the fixtures', 'previous-fixture-test-key')
+        ->assertSuccessful();
+
+    $staff = LocalQuickSignIn::eligibleAccounts()->sole();
+
+    $this->artisan('erp:test-accounts:seed --refresh')
+        ->expectsQuestion('Previous APP_KEY used to seed the fixtures', 'previous-fixture-test-key')
+        ->assertSuccessful();
+
+    expect($staff->email)->toBe(LocalQuickSignIn::email(WorkspaceRole::Staff))
+        ->and($staff->fresh()->getRawOriginal())->toBe($staff->getRawOriginal())
+        ->and($collidingUser->fresh()->getRawOriginal())->toBe($original);
+});
+
+it('blocks fixture seeding on a public app URL even with local debug enabled', function () {
+    config(['app.url' => 'https://erp.example.com']);
+
+    $this->artisan('erp:test-accounts:seed')->assertFailed();
+    $this->seed(LocalQuickSignInSeeder::class);
+
+    $this->assertDatabaseEmpty('users');
+});
+
+it('blocks listing and quick sign-in for a public request to a local configuration', function () {
+    $this->artisan('erp:test-accounts:seed')->expectsOutput('Eligible local test accounts: 2.')->assertSuccessful();
+    $staff = LocalQuickSignIn::eligibleAccounts()->last();
+
+    $this->withoutVite()->get('https://erp.example.com/login')
+        ->assertInertia(fn (Assert $page) => $page->has('localQuickSignInUsers', 0));
+
+    $this->withSession(['_token' => 'local-sign-in-test'])
+        ->post('https://erp.example.com/login/local', ['user_id' => $staff->id, '_token' => 'local-sign-in-test'])
+        ->assertNotFound();
+
+    $this->assertGuest();
 });
 
 it('shows the seeded accounts and signs staff into the non-demo inbox', function () {

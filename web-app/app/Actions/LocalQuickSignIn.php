@@ -16,9 +16,9 @@ class LocalQuickSignIn
     /**
      * Prove the seeder created the account using its existing password hash.
      */
-    public static function fixturePassword(string $email): string
+    public static function fixturePassword(string $email, ?string $key = null): string
     {
-        return hash_hmac('sha256', 'local-quick-sign-in:'.$email, config('app.key'));
+        return hash_hmac('sha256', 'local-quick-sign-in:'.$email, $key ?? config('app.key'));
     }
 
     /** @return Collection<int, User> */
