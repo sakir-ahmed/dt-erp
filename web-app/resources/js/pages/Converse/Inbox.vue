@@ -2,6 +2,7 @@
 import { Head, Link, router, useForm, useHttp, usePage, usePoll } from '@inertiajs/vue3';
 import { computed, nextTick, ref, watch } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import ConverseContactAvatar from '../../components/ConverseContactAvatar.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SearchBar from '../../components/ui-kit/SearchBar.vue';
@@ -140,6 +141,13 @@ function filter() {
     });
 }
 
+function contactLabel(contact) {
+    const channel = page.props.labels[contact.channel] ?? contact.channel;
+    return contact.name?.trim() || (contact.contact_suffix
+        ? `${channel} •••• ${contact.contact_suffix}`
+        : `${channel} ${page.props.labels.converse_contact} #${contact.id}`);
+}
+
 function threadUrl(id) {
     const params = new URLSearchParams();
     if (props.filters.search) params.set('search', props.filters.search);
@@ -171,13 +179,16 @@ function threadUrl(id) {
                 <ul v-if="conversations.data.length" class="divide-y divide-line">
                     <li v-for="row in conversations.data" :key="row.id">
                         <Link :href="threadUrl(row.id)" :aria-current="thread?.id === row.id ? 'page' : undefined"
-                            class="block px-3 py-2 hover:bg-page focus-visible:outline-offset-[-2px]"
+                            class="flex items-center gap-2 px-3 py-2 hover:bg-page focus-visible:outline-offset-[-2px]"
                             :class="{ 'bg-selected': thread?.id === row.id }">
-                            <span class="flex flex-wrap items-center justify-between gap-x-2">
-                                <span class="font-semibold">{{ (thread?.id === row.id ? thread.name : row.name) || page.props.labels.unnamed_contact }}</span>
-                                <span class="rounded-md bg-page px-2 text-xs leading-5 text-muted">{{ page.props.labels[row.channel] ?? row.channel }}</span>
+                            <ConverseContactAvatar :name="row.name" :photo="row.sender_photo" />
+                            <span class="min-w-0 flex-1">
+                                <span class="flex flex-wrap items-center justify-between gap-x-2">
+                                    <span class="min-w-0 wrap-anywhere font-semibold">{{ contactLabel(row) }}</span>
+                                    <span class="rounded-md bg-page px-2 text-xs leading-5 text-muted">{{ page.props.labels[row.channel] ?? row.channel }}</span>
+                                </span>
+                                <span class="mt-1 block text-xs text-muted">{{ row.account }} · {{ formatDhakaDateTime(row.last_message_at, page.props.locale) }}</span>
                             </span>
-                            <span class="mt-1 block text-xs text-muted">{{ row.account }} · {{ formatDhakaDateTime(row.last_message_at, page.props.locale) }}</span>
                         </Link>
                     </li>
                 </ul>
@@ -190,17 +201,9 @@ function threadUrl(id) {
             <section v-if="thread" class="min-w-0 rounded-lg border border-line bg-surface" :aria-label="page.props.labels.conversation_history">
                 <header class="border-b border-line px-3 py-2">
                     <div class="flex items-center gap-2">
-                        <img
-                            v-if="thread.sender_photo"
-                            :key="thread.sender_photo"
-                            :src="thread.sender_photo"
-                            alt=""
-                            referrerpolicy="no-referrer"
-                            class="size-8 shrink-0 rounded-full object-cover"
-                            @error="$event.target.hidden = true"
-                        >
+                        <ConverseContactAvatar :name="thread.name" :photo="thread.sender_photo" />
                         <div class="min-w-0">
-                            <h2 class="wrap-anywhere font-semibold">{{ thread.name || page.props.labels.unnamed_contact }}</h2>
+                            <h2 class="wrap-anywhere font-semibold">{{ contactLabel(thread) }}</h2>
                             <p class="text-xs text-muted">{{ thread.account }} · {{ page.props.labels[thread.channel] ?? thread.channel }}</p>
                         </div>
                     </div>

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Actions\RecordConverseInboundMessage;
 use App\Actions\RecordWhatsAppDeliveryStatus;
+use App\Actions\WhatsAppContactNames;
 use App\Actions\WhatsAppRecipient;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -19,7 +20,7 @@ class ProcessConverseWebhook implements ShouldQueue
 
     public function __construct(public int $eventId) {}
 
-    public function handle(RecordConverseInboundMessage $record, RecordWhatsAppDeliveryStatus $delivery): void
+    public function handle(RecordConverseInboundMessage $record, RecordWhatsAppDeliveryStatus $delivery, WhatsAppContactNames $contactNames): void
     {
         $event = DB::table('cv_webhook_events')->where('id', $this->eventId)->firstOrFail();
         if ($event->processed_at !== null) {
@@ -31,7 +32,7 @@ class ProcessConverseWebhook implements ShouldQueue
             if ($event->provider === 'meta') {
                 $this->recordMessengerMessages($entry, $record);
             } else {
-                $this->recordWhatsAppMessages($entry, $record, $delivery);
+                $this->recordWhatsAppMessages($entry, $record, $delivery, $contactNames);
             }
         }
 
@@ -57,7 +58,7 @@ class ProcessConverseWebhook implements ShouldQueue
         }
     }
 
-    private function recordWhatsAppMessages(mixed $entry, RecordConverseInboundMessage $record, RecordWhatsAppDeliveryStatus $delivery): void
+    private function recordWhatsAppMessages(mixed $entry, RecordConverseInboundMessage $record, RecordWhatsAppDeliveryStatus $delivery, WhatsAppContactNames $contactNames): void
     {
         foreach ((array) data_get($entry, 'changes', []) as $change) {
             if (data_get($change, 'field') !== 'messages') {
@@ -73,17 +74,7 @@ class ProcessConverseWebhook implements ShouldQueue
                 $delivery($account, $receipt);
             }
 
-            $names = [];
-            foreach ((array) data_get($change, 'value.contacts', []) as $contact) {
-                $name = data_get($contact, 'profile.name');
-                if (! is_string($name) || ! mb_check_encoding($name, 'UTF-8') || trim($name) === '') {
-                    continue;
-                }
-                foreach (array_filter([WhatsAppRecipient::phone(data_get($contact, 'wa_id')),
-                    WhatsAppRecipient::businessId(data_get($contact, 'user_id'))]) as $address) {
-                    $names[$address] = mb_substr(trim($name), 0, 255);
-                }
-            }
+            $names = $contactNames(data_get($change, 'value'));
 
             foreach ((array) data_get($change, 'value.messages', []) as $message) {
                 if (data_get($message, 'type') !== 'text' || data_get($message, 'group_id') !== null) {
@@ -125,7 +116,14 @@ class ProcessConverseWebhook implements ShouldQueue
 
         $seconds = $milliseconds ? intdiv((int) $timestamp, 1000) : (int) $timestamp;
         $id = $record($account, $sender, $message, $body, Carbon::createFromTimestampUTC($seconds), $name, $whatsappUserId);
-        if ($id !== null && config('converse.ai.auto_reply') === true) {
+        if ($id === null) {
+            return;
+        }
+        if ($milliseconds) {
+            $conversation = (int) DB::table('cv_messages')->where('id', $id)->value('conversation_id');
+            RefreshConverseMessengerProfile::dispatch($conversation)->onQueue('converse-inbound');
+        }
+        if (config('converse.ai.auto_reply') === true) {
             ReplyToConverseTurn::dispatch($id)->onQueue('converse-ai')->delay(now()->addSeconds(3));
         }
     }

@@ -129,10 +129,13 @@ it('shows the selected Messenger sender profile and reuses it while polling', fu
         $this->get(route('converse.inbox', $thread))->assertInertia(fn (Assert $page) => $page
             ->where('thread.name', 'Sample Customer')
             ->where('thread.sender_photo', $photo)
+            ->where('conversations.data.0.name', 'Sample Customer')
+            ->where('conversations.data.0.sender_photo', $photo)
             ->missing('thread.send_token')
             ->missing('thread.sender_id'));
     }
 
+    $this->assertDatabaseHas('cv_contacts', ['name' => 'Sample Customer']);
     Http::assertSentCount(1);
     Http::assertSent(fn (Request $request) => $request->method() === 'GET'
         && $request->hasHeader('Authorization', 'Bearer test-page-token')
@@ -158,3 +161,30 @@ it('keeps the inbox usable when Meta denies profile access or returns an unsuppo
     'missing permission' => [null, 403, 'Stored name'],
     'unsupported photo host' => [['first_name' => 'Sample', 'profile_pic' => 'https://fbcdn.net.example.invalid/avatar'], 200, 'Sample'],
 ]);
+
+it('backfills a WhatsApp name from the matching signed archived message without replaying it', function () {
+    Http::preventStrayRequests();
+    $account = converseChannel('whatsapp');
+    $message = app(RecordConverseInboundMessage::class)($account, '8801000001234', 'wamid.archived', 'Stored question', now());
+    $thread = DB::table('cv_messages')->where('id', $message)->value('conversation_id');
+
+    $payload = ['entry' => [['changes' => [['field' => 'messages', 'value' => [
+        'metadata' => ['phone_number_id' => 'whatsapp-account'],
+        'contacts' => [['wa_id' => '8801000001234', 'profile' => ['name' => 'Archived WhatsApp name']]],
+        'messages' => [['id' => 'wamid.archived', 'from' => '8801000001234']],
+    ]]]]]];
+    DB::table('cv_webhook_events')->insert([
+        'provider' => 'whatsapp', 'digest' => hash('sha256', json_encode($payload)),
+        'payload' => Crypt::encryptString(json_encode($payload)), 'processed_at' => now(), 'received_at' => now(),
+    ]);
+    $this->artisan('converse:backfill-contact-profiles')->assertSuccessful();
+    $this->artisan('converse:backfill-contact-profiles')->assertSuccessful();
+
+    $this->actingAs(User::factory()->create()->assignRole(WorkspaceRole::Staff->value))
+        ->get(route('converse.inbox', $thread))->assertInertia(fn (Assert $page) => $page
+        ->where('thread.name', 'Archived WhatsApp name')->where('thread.sender_photo', null)
+        ->where('thread.contact_suffix', '1234')->missing('thread.contact_address')
+        ->where('conversations.data.0.name', 'Archived WhatsApp name'));
+    $this->assertDatabaseCount('cv_messages', 1);
+    Http::assertNothingSent();
+});

@@ -163,6 +163,7 @@ return [
     'all_channels' => 'সব চ্যানেল',
     'messenger' => 'মেসেঞ্জার',
     'whatsapp' => 'হোয়াটসঅ্যাপ',
+    'converse_contact' => 'যোগাযোগ',
     'unnamed_contact' => 'নামহীন যোগাযোগ',
     'no_conversations' => 'কোনো কথোপকথন পাওয়া যায়নি।',
     'conversation_history' => 'কথোপকথনের ইতিহাস',

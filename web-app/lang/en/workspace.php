@@ -163,6 +163,7 @@ return [
     'all_channels' => 'All channels',
     'messenger' => 'Messenger',
     'whatsapp' => 'WhatsApp',
+    'converse_contact' => 'contact',
     'unnamed_contact' => 'Unnamed contact',
     'no_conversations' => 'No conversations found.',
     'conversation_history' => 'Conversation history',

@@ -10,7 +10,9 @@ use App\Actions\RecordConverseAudit;
 use App\Actions\RecordConverseNotification;
 use App\Actions\RecordWhatsAppDeliveryStatus;
 use App\Actions\SendConverseReply;
+use App\Actions\WhatsAppRecipient;
 use App\Enums\WorkspacePermission;
+use App\Jobs\RefreshConverseMessengerProfile;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -58,9 +60,6 @@ class ConverseInboxController extends Controller
             }))
             ->orderByDesc('conversations.last_message_at')->orderByDesc('conversations.id')
             ->simplePaginate(25, pageName: 'inbox_page')->withQueryString();
-        foreach ($conversations->items() as $row) {
-            $row->last_message_at = Carbon::parse($row->last_message_at)->toISOString();
-        }
 
         $messages = $thread === null ? null : DB::table('cv_messages as message')
             ->leftJoin('cv_outbound_assets as asset', 'message.outbound_asset_id', '=', 'asset.id')
@@ -73,10 +72,22 @@ class ConverseInboxController extends Controller
             $row->occurred_at = Carbon::parse($row->occurred_at)->toISOString();
         }
 
-        if ($thread && $thread->channel === 'messenger' && ! $request->user()->is_demo) {
-            $senderProfile = $profile((int) $thread->id);
-            $thread->name = $senderProfile['name'] ?? $thread->name;
-            $thread->sender_photo = $senderProfile['photo'] ?? null;
+        $demo = (bool) $request->user()->is_demo;
+        $selectedProfile = $thread && $thread->channel === 'messenger' && ! $demo ? $profile((int) $thread->id) : [];
+        $cachedProfiles = $demo ? [] : $profile->cached(collect($conversations->items())->pluck('id')->all());
+        $refresh = null;
+        foreach ($conversations->items() as $row) {
+            $row->last_message_at = Carbon::parse($row->last_message_at)->toISOString();
+            if (array_key_exists($row->id, $cachedProfiles) && $cachedProfiles[$row->id] === null) {
+                $refresh ??= (int) $row->id;
+            }
+            $this->applyContactProfile($row, $row->id === $thread?->id ? $selectedProfile : ($cachedProfiles[$row->id] ?? []));
+        }
+        if ($refresh !== null && config('queue.default') !== 'sync') {
+            RefreshConverseMessengerProfile::dispatch($refresh)->onQueue('converse-inbound');
+        }
+        if ($thread) {
+            $this->applyContactProfile($thread, $selectedProfile);
         }
 
         $canManage = $request->user()->can(WorkspacePermission::ManageConverseInbox->value);
@@ -205,6 +216,15 @@ class ConverseInboxController extends Controller
         ]);
     }
 
+    private function applyContactProfile(object $row, array $profile): void
+    {
+        $row->name = $profile['name'] ?? $row->name;
+        $row->sender_photo = $profile['photo'] ?? null;
+        $phone = $row->channel === 'whatsapp' ? WhatsAppRecipient::phone($row->contact_address) : null;
+        $row->contact_suffix = $phone !== null ? substr($phone, -4) : null;
+        unset($row->contact_address);
+    }
+
     private function scope(Request $request): Builder
     {
         return DB::table('cv_conversations as conversations')
@@ -213,6 +233,6 @@ class ConverseInboxController extends Controller
             ->join('cv_channel_accounts as accounts', 'accounts.id', '=', 'identities.channel_account_id')
             ->where('accounts.is_demo', (bool) $request->user()->is_demo)
             ->select('conversations.id', 'conversations.mode', 'conversations.status', 'conversations.last_message_at',
-                'contacts.name', 'accounts.type as channel', 'accounts.name as account');
+                'contacts.name', 'identities.external_id as contact_address', 'accounts.type as channel', 'accounts.name as account');
     }
 }
