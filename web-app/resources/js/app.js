@@ -11,9 +11,11 @@ import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
 import { createApp, h, nextTick } from 'vue';
 import { toast } from 'vue-sonner';
 import ToastHost from './components/ui-kit/ToastHost.vue';
+import { recordWorkspaceNotification, resetWorkspaceNotifications } from './lib/workspaceNotifications';
 
 function showSuccess(flash) {
     if (flash?.success) {
+        recordWorkspaceNotification(flash.success);
         toast.success(flash.success);
     }
 }
@@ -22,6 +24,9 @@ router.on('flash', ({ detail }) => showSuccess(detail.flash));
 
 router.on('navigate', ({ detail }) => {
     document.documentElement.lang = detail.page.props.locale;
+    if (!detail.page.props.signedIn) {
+        resetWorkspaceNotifications();
+    }
 });
 
 createInertiaApp({

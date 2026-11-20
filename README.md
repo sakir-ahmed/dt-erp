@@ -6,8 +6,8 @@ Datatech BD Ltd. Enterprise Resource Platform. Single repository: **Laravel** ba
 
 | Code | Module | Status |
 |------|--------|--------|
-| core | Auth, users, roles, settings, audit, notifications | Planned (M00) |
-| **M01** | **DT-Converse: AI social messaging and sales automation** | **In planning** |
+| core | Auth, users, roles, settings, audit, notifications | Authentication and user directory available |
+| **M01** | **DT-Converse: AI social messaging and sales automation** | **Phase 1 in development** |
 | M02+ | CRM, Billing, Projects, Support, HR | Future |
 
 ## Documentation Index
@@ -20,6 +20,12 @@ Datatech BD Ltd. Enterprise Resource Platform. Single repository: **Laravel** ba
 | `docs/API.md` | REST endpoints, webhooks, realtime events |
 | `docs/AI_ENGINE.md` | Reply pipeline, brain routing, RAG, language rules |
 | `docs/TASKS.md` | MVP sprint breakdown |
+
+## Current Phase 1 milestone
+
+The running application is in `web-app/`. DT-Converse has an inbox for signed Messenger and WhatsApp text deliveries, channel account management, guarded human text replies, a sample-only AI playground, and knowledge collections with structured price plans and offers. The standalone Products and Stock Movements screens and routes have been retired. Their historical tables and migration files are retained. The DT-Converse knowledge catalog and pricing are separate from the retired inventory tables.
+
+See [the implemented endpoints](docs/API.md) for local provider setup. The proposed stack below describes the longer-term target.
 
 ## Proposed Stack
 

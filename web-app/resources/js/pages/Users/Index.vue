@@ -18,6 +18,7 @@ const props = defineProps({
 });
 
 const page = usePage();
+const canEditUser = (user) => props.canManageUsers && user.editable;
 const query = ref(props.search);
 const searching = ref(false);
 const columns = computed(() => {
@@ -112,14 +113,14 @@ function roleLabels(user) {
             <SearchBar v-model="query" :label="page.props.labels.search_users" :clear-label="page.props.labels.clear" :has-filter="Boolean(search)" :busy="searching" @search="searchUsers" />
 
             <template v-if="users.data.length">
-                <DataTable :columns="columns" :rows="users.data">
+                <DataTable :columns="columns" :rows="users.data" :is-row-clickable="canEditUser">
                     <template #cell(name)="{ value }"><p class="max-w-56 truncate font-medium" :title="value">{{ value }}</p></template>
                     <template #cell(email)="{ value }"><p class="max-w-72 truncate" :title="value">{{ value }}</p></template>
                     <template #cell(roles)="{ row }">
                         <span v-for="role in roleLabels(row)" :key="role" class="me-1 inline-block rounded-md bg-selected px-2 text-xs leading-5 text-brand">{{ role }}</span>
                     </template>
                     <template #cell(actions)="{ row }">
-                        <button v-if="row.editable" type="button" class="size-6 rounded-md hover:bg-surface" :aria-label="`${page.props.labels.edit_staff} · ${row.name}`" @click="openUser(row)"><AppIcon name="edit" /></button>
+                        <button v-if="canEditUser(row)" data-row-action type="button" class="size-6 rounded-md hover:bg-surface" :aria-label="`${page.props.labels.edit_staff} · ${row.name}`" @click="openUser(row)"><AppIcon name="edit" /></button>
                     </template>
                     <template #card="{ row: user }">
                         <div class="flex items-start justify-between gap-2">
@@ -128,7 +129,7 @@ function roleLabels(user) {
                                 <p class="text-muted wrap-anywhere">{{ user.email }}</p>
                                 <span v-for="role in roleLabels(user)" :key="role" class="me-1 inline-block rounded-md bg-selected px-2 text-xs leading-5 text-brand">{{ role }}</span>
                             </div>
-                            <button v-if="user.editable" type="button" class="ui-button ui-button-icon shrink-0" :aria-label="`${page.props.labels.edit_staff} · ${user.name}`" @click="openUser(user)"><AppIcon name="edit" /></button>
+                            <button v-if="canEditUser(user)" data-row-action type="button" class="ui-button ui-button-icon shrink-0" :aria-label="`${page.props.labels.edit_staff} · ${user.name}`" @click="openUser(user)"><AppIcon name="edit" /></button>
                         </div>
                     </template>
                 </DataTable>

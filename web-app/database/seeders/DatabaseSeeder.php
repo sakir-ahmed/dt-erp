@@ -18,6 +18,9 @@ class DatabaseSeeder extends Seeder
         );
 
         Role::findOrCreate(WorkspaceRole::Administrator->value, 'web')->givePermissionTo($permissions);
-        Role::findOrCreate(WorkspaceRole::Staff->value, 'web')->givePermissionTo(WorkspacePermission::ViewProducts->value);
+        Role::findOrCreate(WorkspaceRole::Staff->value, 'web')->givePermissionTo([
+            WorkspacePermission::ViewConverseInbox->value,
+            WorkspacePermission::ManageConverseInbox->value,
+        ]);
     }
 }

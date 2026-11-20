@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\LocalQuickSignIn;
 use App\Http\Requests\LoginRequest;
 use App\Models\User;
 use Illuminate\Http\RedirectResponse;
@@ -16,8 +17,8 @@ class SessionController extends Controller
     public function create(): Response
     {
         return Inertia::render('Login', [
-            'demoUsers' => fn () => User::demoLoginEnabled()
-                ? User::query()->where('is_demo', true)->orderBy('id')->get(['id', 'name'])
+            'localQuickSignInUsers' => fn () => User::localQuickSignInEnabled()
+                ? LocalQuickSignIn::eligibleAccounts()->map->only(['id', 'name'])->values()
                 : [],
         ]);
     }

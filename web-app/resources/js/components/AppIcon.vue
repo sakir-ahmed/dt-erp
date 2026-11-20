@@ -1,5 +1,5 @@
 <script setup>
-import { faCubes, faMoon, faTableColumns, faUsers, faTriangleExclamation, faBars, faPlus, faXmark, faMagnifyingGlass, faPen } from '@fortawesome/free-solid-svg-icons';
+import { faBookOpen, faPlay, faPlug, faBell, faInbox, faChartLine, faPlugCircleXmark, faSun, faWifi, faChevronDown, faChevronLeft, faChevronRight, faEye, faEyeSlash, faCubes, faMoon, faTableColumns, faUsers, faTriangleExclamation, faBars, faPlus, faXmark, faMagnifyingGlass, faPen, faPaperclip } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome';
 
 defineProps({
@@ -7,6 +7,21 @@ defineProps({
 });
 
 const icons = {
+    paperclip: faPaperclip,
+    bell: faBell,
+    plug: faPlug,
+    play: faPlay,
+    book: faBookOpen,
+    inbox: faInbox,
+    'chart-line': faChartLine,
+    'plug-off': faPlugCircleXmark,
+    sun: faSun,
+    wifi: faWifi,
+    'chevron-down': faChevronDown,
+    'chevron-left': faChevronLeft,
+    'chevron-right': faChevronRight,
+    eye: faEye,
+    'eye-slash': faEyeSlash,
     cubes: faCubes,
     dashboard: faTableColumns,
     moon: faMoon,

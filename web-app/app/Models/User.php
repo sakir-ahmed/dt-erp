@@ -18,9 +18,9 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasFactory, HasRoles, Notifiable;
 
-    public static function demoLoginEnabled(): bool
+    public static function localQuickSignInEnabled(): bool
     {
-        return app()->environment('local') && config('erp.demo_login') === true;
+        return app()->environment('local') && config('app.debug') === true;
     }
 
     /**

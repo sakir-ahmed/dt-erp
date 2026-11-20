@@ -4,9 +4,10 @@ namespace App\Enums;
 
 enum WorkspacePermission: string
 {
+    case ManageConverseChannels = 'converse.channels.manage';
+    case ManageConverseKnowledge = 'converse.knowledge.manage';
+    case ManageConverseInbox = 'converse.inbox.manage';
+    case ViewConverseInbox = 'converse.inbox.view';
     case ViewUsers = 'users.view';
-    case ViewProducts = 'products.view';
-    case ManageProducts = 'products.manage';
-    case ManageStock = 'stock.manage';
     case ManageUsers = 'users.manage';
 }

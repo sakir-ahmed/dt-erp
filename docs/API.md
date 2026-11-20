@@ -2,6 +2,15 @@
 
 Base: `/api/v1/converse` · Auth: Sanctum (SPA cookie) · JSON · Pagination: `?page=&per_page=` · Filters via query params · Errors: `{message, errors{}}` with standard HTTP codes. Every endpoint is permission-guarded.
 
+## Implemented in the current milestone
+
+- The Inertia workspace serves `/converse/inbox`, `/converse/inbox/{conversation}`, and `/converse/channels`. Inbox access, conversation changes, and channel administration use separate permissions.
+- `GET /api/v1/converse/webhooks/meta` and `GET /api/v1/converse/webhooks/whatsapp` verify the provider challenge. The corresponding POST endpoints validate the signature over the exact body and persist the encrypted event before queueing it.
+- For live receive-only testing, register the numeric Facebook Page ID or WhatsApp phone number ID under Channels using a non-demo administrator. Set the matching `CONVERSE_*` secrets and verification token from `web-app/.env.example`, run `php artisan queue:work --queue=converse-inbound`, and register the callback with Meta using an approved HTTPS deployment. The local preview accepts signed local fixtures. The webhook job stores supported text messages for enabled, non-demo accounts.
+- Staff can send free-form text replies from an enabled non-demo channel within 24 hours of the last inbound message. The thread must be in human mode and open to replies, and the contact must have no recorded opt-out. A non-demo administrator saves the channel sending credential in its edit panel. Enable live sending explicitly with `CONVERSE_OUTBOUND_ENABLED=true`. Provider acceptance, definitive errors, and uncertain results appear on the message. The same operation is never retried automatically. Read receipts, outside-window templates, and the JSON resources below remain planned. [Messenger Send API](https://developers.facebook.com/docs/graph-api/reference/page/messages) · [WhatsApp Business Platform](https://developers.facebook.com/documentation/business-messaging/whatsapp/overview/)
+- Inbox and thread data refresh about every five seconds in the foreground. The AI playground uses built-in sample prompts and shows the model and fallback result. Local-only routing uses loopback Ollama. Configure Ollama with cloud features disabled for local operation. Cloud fallback is off by default and explicit opt-in applies to playground samples only.
+- Knowledge admins can manage tenant-separated collections and entries, including price plans and offers linked to a product or service. Retrieval takes explicit collection IDs and returns only enabled customer-visible records within their Dhaka calendar validity dates. AI replies do not consume these records yet.
+
 ## 1. Webhooks (public, signature verified)
 
 | Method | Path | Purpose |
