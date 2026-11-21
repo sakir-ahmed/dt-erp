@@ -104,6 +104,10 @@ Route::middleware('auth')->group(function () {
         Route::post('/collections/{collection}/documents/reindex/{document?}', [ConverseKnowledgeController::class, 'reindexDocuments'])
             ->whereNumber(['collection', 'document'])->name('converse.knowledge.documents.reindex');
         Route::patch('/collections/{collection}/entries/{entry}', [ConverseKnowledgeController::class, 'saveEntry'])->whereNumber(['collection', 'entry'])->name('converse.knowledge.entries.update');
+        Route::post('/chat', [ConverseKnowledgeController::class, 'chat'])->middleware('throttle:10,1')->name('converse.knowledge.chat');
+        Route::post('/corrections', [ConverseKnowledgeController::class, 'storeCorrection'])->name('converse.knowledge.corrections.store');
+        Route::patch('/corrections/{correction}', [ConverseKnowledgeController::class, 'updateCorrection'])->whereNumber('correction')->name('converse.knowledge.corrections.update');
+        Route::delete('/corrections/{correction}', [ConverseKnowledgeController::class, 'destroyCorrection'])->whereNumber('correction')->name('converse.knowledge.corrections.destroy');
     });
 
     Route::get('/settings', [SettingsController::class, 'index'])

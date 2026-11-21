@@ -3,10 +3,11 @@
 namespace App\Actions;
 
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class ComposeConverseReply
 {
-    public function __construct(private RetrieveConverseKnowledge $retrieve, private RouteConverseDraft $draft, private ConverseAiSettings $configuration, private DetectConverseLanguage $languages, private ConverseOutboundAssets $assets) {}
+    public function __construct(private RetrieveConverseKnowledge $retrieve, private RouteConverseDraft $draft, private ConverseAiSettings $configuration, private DetectConverseLanguage $languages, private ConverseOutboundAssets $assets, private MatchConverseCorrection $corrections) {}
 
     public function __invoke(Collection $history, array $settings): array
     {
@@ -50,6 +51,19 @@ class ComposeConverseReply
 
         $channelCollections = $settings['collections'] ?? [];
         $collections = array_values(array_intersect($channelCollections, $agent['collections'] ?? $channelCollections));
+
+        // A human-approved correction answers matching questions verbatim.
+        if ($correction = ($this->corrections)($latest, $collections)) {
+            return [...$turn, 'decision' => 'send', 'body' => $correction->answer,
+                'source_ids' => [], 'provider' => 'correction', 'correction' => true];
+        }
+
+        // Keyword routing: collections whose keyword appears in the message
+        // scope the answer; without a match every collection stays eligible.
+        $scoped = $this->scopeByKeywords($latest, $collections);
+        if ($scoped !== []) {
+            $collections = $scoped;
+        }
         $sandbox = $settings['sandbox'] ?? false;
         if (! $sandbox && preg_match('/\b(attach|brochure|catalog(?:ue)?|pdf|product book|download|send (?:me )?(?:a |the )?(?:file|photo|image))\b|ব্রোশিওর|ক্যাটালগ|পিডিএফ|বই পাঠা|ছবি পাঠা/ui', $latest)) {
             return $this->chooseAsset($history, $collections, $agentName, $turn);
@@ -126,6 +140,32 @@ class ComposeConverseReply
 
         return [...$turn, ...array_intersect_key($draft, array_flip(['provider', 'model', 'fallback'])),
             'decision' => $body === null ? 'handoff' : 'send', 'body' => $body ?? $turn['body'], 'source_ids' => [$source->id]];
+    }
+
+    /**
+     * @return array<int, int> Matched collection ids, empty when no keyword matches.
+     */
+    private function scopeByKeywords(string $message, array $collectionIds): array
+    {
+        if ($collectionIds === [] || trim($message) === '') {
+            return [];
+        }
+
+        $normalized = mb_strtolower($message);
+        $matched = [];
+        foreach (DB::table('cv_knowledge_collections')->whereIn('id', $collectionIds)
+            ->whereNotNull('keywords')->get(['id', 'keywords']) as $collection) {
+            $keywords = json_decode((string) $collection->keywords, true);
+            foreach (is_array($keywords) ? $keywords : [] as $keyword) {
+                if (is_string($keyword) && mb_strlen(trim($keyword)) >= 2
+                    && str_contains($normalized, mb_strtolower(trim($keyword)))) {
+                    $matched[] = (int) $collection->id;
+                    break;
+                }
+            }
+        }
+
+        return $matched;
     }
 
     private function chooseAsset(Collection $history, array $collections, string $agent, array $turn): array

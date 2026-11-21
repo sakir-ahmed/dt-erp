@@ -1,10 +1,13 @@
 <script setup>
-import { Head, Link, useForm, usePage, usePoll } from '@inertiajs/vue3';
-import { computed, ref, useId, watch } from 'vue';
+import { Head, Link, useHttp, useForm, usePage, usePoll } from '@inertiajs/vue3';
+import { computed, nextTick, ref, useId, watch } from 'vue';
+import AppIcon from '../../components/AppIcon.vue';
+import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
+import { formatDhakaDateTime } from '../../lib/format';
 
 const props = defineProps({
     collections: { type: Object, required: true },
@@ -12,6 +15,7 @@ const props = defineProps({
     entries: { type: Object, default: null },
     documents: { type: Array, default: () => [] },
     outboundAssets: { type: Array, default: () => [] },
+    corrections: { type: Array, default: () => [] },
     subjects: { type: Array, required: true },
     kinds: { type: Array, required: true },
 });
@@ -110,7 +114,7 @@ function saveDocument(id) {
 function reindex(id = null) {
     documentAction.post(`${documentsPath.value}/reindex${id ? `/${id}` : ''}`, { preserveScroll: true });
 }
-const collectionForm = useForm({ name: '', enabled: false });
+const collectionForm = useForm({ name: '', enabled: false, keywords: '' });
 const entryForm = useForm({
     kind: 'product', language: 'en', title: '', body: '', enabled: false, public: false,
     subject_id: '', amount_type: 'fixed', amount: '', currency: 'BDT', valid_from: '', valid_to: '',
@@ -130,11 +134,88 @@ function open(kind, record = null) {
             if (record[key] !== null) form.value[key] = typeof form.value[key] === 'boolean' ? Boolean(record[key]) : record[key];
         }
     }
+    if (kind === 'collection') {
+        collectionForm.keywords = Array.isArray(record?.keywords) ? record.keywords.join(', ') : '';
+    }
+}
+
+function saveCollectionForm() {
+    collectionForm.transform((data) => ({
+        name: data.name, enabled: data.enabled,
+        keywords: data.keywords.split(',').map((keyword) => keyword.trim()).filter(Boolean),
+    }));
+    collectionForm.submit(editing.value ? 'patch' : 'post', editing.value ? `/converse/knowledge/collections/${editing.value}` : '/converse/knowledge/collections', {
+        preserveScroll: true,
+        onSuccess: () => { panel.value = null; },
+    });
+}
+
+// Test chat: ask against one collection or all collections and inspect the
+// grounded answer; unexpected replies become trained corrections.
+const chat = useHttp({ collection: null, message: '' });
+const chatScope = ref('all');
+const chatMessage = ref('');
+const chatBusy = ref(false);
+const chatTranscript = ref([]);
+const chatError = ref(false);
+const chatBox = ref(null);
+
+async function askChat() {
+    const message = chatMessage.value.trim();
+    if (!message || chatBusy.value) return;
+    chatBusy.value = true;
+    chatError.value = false;
+    chatTranscript.value.push({ role: 'user', body: message, at: new Date().toISOString() });
+    chatMessage.value = '';
+    try {
+        const response = await chat.post('/converse/knowledge/chat', {
+            message,
+            ...(chatScope.value !== 'all' ? { collection: Number(chatScope.value) } : {}),
+        });
+        chatTranscript.value.push({ role: 'ai', at: new Date().toISOString(), ...response.reply });
+    } catch {
+        chatError.value = true;
+    } finally {
+        chatBusy.value = false;
+        await nextTick(() => chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight }));
+    }
+}
+
+const correctionForm = useForm({ collection_id: null, question: '', answer: '' });
+const correctionPanel = ref(false);
+const correctionAction = useForm({});
+
+function trainCorrection(question) {
+    correctionForm.reset();
+    correctionForm.clearErrors();
+    correctionForm.question = question;
+    correctionForm.collection_id = props.collection?.id ?? null;
+    correctionPanel.value = true;
+}
+
+function saveCorrection() {
+    correctionForm.post('/converse/knowledge/corrections', {
+        preserveScroll: true,
+        onSuccess: () => { correctionPanel.value = false; },
+    });
+}
+
+function toggleCorrection(item) {
+    correctionAction.enabled = !item.enabled;
+    correctionAction.patch(`/converse/knowledge/corrections/${item.id}`, { preserveScroll: true });
+}
+
+function deleteCorrection(item) {
+    correctionAction.delete(`/converse/knowledge/corrections/${item.id}`, { preserveScroll: true });
 }
 
 function save() {
-    const base = '/converse/knowledge/collections';
-    const path = panel.value === 'collection' ? base : `${base}/${props.collection.id}/entries`;
+    if (panel.value === 'collection') {
+        saveCollectionForm();
+
+        return;
+    }
+    const path = `/converse/knowledge/collections/${props.collection.id}/entries`;
     form.value.submit(editing.value ? 'patch' : 'post', editing.value ? `${path}/${editing.value}` : path, {
         preserveScroll: true,
         onSuccess: () => { panel.value = null; },
@@ -150,11 +231,14 @@ function save() {
         </PageHeader>
         <div class="grid items-start gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(0,2fr)]">
             <section class="rounded-lg border border-line bg-surface" :aria-label="labels.collections">
-                <h2 class="border-b border-line px-3 py-2 text-sm font-semibold">{{ labels.collections }}</h2>
+                <h2 class="flex items-center gap-2 border-b border-line px-3 py-2 text-sm font-semibold"><AppIcon name="book" class="text-muted" />{{ labels.collections }}</h2>
                 <p v-if="!collections.data.length" class="p-3 text-sm text-muted">{{ labels.no_collections }}</p>
                 <ul v-else class="divide-y divide-line">
                     <li v-for="row in collections.data" :key="row.id">
-                        <Link :href="`/converse/knowledge?collection=${row.id}`" class="block px-3 py-2 text-sm hover:bg-page" :class="{ 'bg-selected': row.id === collection?.id }" :aria-current="row.id === collection?.id ? 'page' : undefined">{{ row.name }}</Link>
+                        <Link :href="`/converse/knowledge?collection=${row.id}`" class="block px-3 py-2 text-sm hover:bg-page" :class="{ 'bg-selected': row.id === collection?.id }" :aria-current="row.id === collection?.id ? 'page' : undefined">
+                            {{ row.name }}
+                            <span v-if="Array.isArray(row.keywords) && row.keywords.length" class="mt-0.5 block text-xs text-muted">{{ row.keywords.join(' · ') }}</span>
+                        </Link>
                     </li>
                 </ul>
                 <div v-if="collections.prev_page_url || collections.next_page_url" class="flex gap-2 p-3">
@@ -164,18 +248,21 @@ function save() {
             </section>
             <section v-if="collection" class="rounded-lg border border-line bg-surface">
                 <header class="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
-                    <h2 class="text-sm font-semibold">{{ collection.name }}</h2>
+                    <div class="min-w-0">
+                        <h2 class="text-sm font-semibold">{{ collection.name }}</h2>
+                        <p v-if="Array.isArray(collection.keywords) && collection.keywords.length" class="text-xs text-muted">{{ collection.keywords.join(' · ') }}</p>
+                    </div>
                     <div class="flex gap-2">
                         <button type="button" class="ui-button" @click="open('collection', collection)">{{ labels.edit_collection }}</button>
                         <button type="button" class="ui-button ui-button-primary" @click="open('entry')">{{ labels.add_entry }}</button>
                     </div>
                 </header>
-                <p v-if="!entries.data.length" class="p-3 text-sm text-muted">{{ labels.no_entries }}</p>
+                <EmptyState v-if="!entries.data.length" icon="book" :title="labels.no_entries" />
                 <ul v-else class="divide-y divide-line">
                     <li v-for="entry in entries.data" :key="entry.id">
                         <button type="button" class="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-start text-sm hover:bg-page" @click="open('entry', entry)">
                             <span>{{ entry.title }}</span>
-                            <span class="text-xs text-muted">{{ labels[`knowledge_${entry.kind}`] }} · {{ labels[entry.enabled ? 'enabled' : 'disabled'] }}</span>
+                            <span class="rounded-full px-2 py-0.5 text-xs" :class="entry.enabled ? 'bg-success/10 text-success' : 'bg-page text-muted'">{{ labels[entry.enabled ? 'enabled' : 'disabled'] }}</span>
                         </button>
                     </li>
                 </ul>
@@ -185,6 +272,73 @@ function save() {
                 </div>
             </section>
         </div>
+
+        <section class="mt-3 rounded-lg border border-line bg-surface" aria-labelledby="knowledge-chat-title">
+            <header class="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
+                <div>
+                    <h2 id="knowledge-chat-title" class="flex items-center gap-2 text-sm font-semibold"><AppIcon name="play" class="text-muted" />{{ labels.knowledge_chat_title }}</h2>
+                    <p class="mt-0.5 text-xs text-muted">{{ labels.knowledge_chat_help }}</p>
+                </div>
+                <label class="text-xs font-medium">
+                    {{ labels.knowledge_chat_scope }}
+                    <select v-model="chatScope" class="ui-input mt-1 block" :disabled="chatBusy">
+                        <option value="all">{{ labels.knowledge_chat_all_collections }}</option>
+                        <option v-for="row in collections.data" :key="row.id" :value="String(row.id)">{{ row.name }}</option>
+                    </select>
+                </label>
+            </header>
+            <div ref="chatBox" class="max-h-96 space-y-2 overflow-y-auto p-3">
+                <EmptyState v-if="!chatTranscript.length" icon="play" :title="labels.knowledge_chat_empty" />
+                <template v-for="(item, index) in chatTranscript" :key="index">
+                    <p v-if="item.role === 'user'" class="ms-auto w-fit max-w-[85%] whitespace-pre-wrap wrap-anywhere rounded-lg bg-selected p-2.5 text-[13px]">{{ item.body }}</p>
+                    <div v-else class="w-fit max-w-[85%] rounded-lg bg-page p-2.5">
+                        <p class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ item.body }}</p>
+                        <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                            <span class="rounded-full px-2 py-0.5" :class="item.decision === 'send' ? 'bg-success/10 text-success' : 'bg-page'">{{ labels[`knowledge_chat_${item.decision}`] }}</span>
+                            <span v-if="item.correction" class="rounded-full bg-brand/10 px-2 py-0.5 text-brand">{{ labels.knowledge_correction_badge }}</span>
+                            <span v-else-if="item.provider">{{ item.provider }}<template v-if="item.model"> · {{ item.model }}</template></span>
+                            <span v-for="source in item.sources" :key="source.id" class="rounded-full bg-page px-2 py-0.5">{{ source.title }}</span>
+                            <span>· {{ formatDhakaDateTime(item.at, page.props.locale) }}</span>
+                        </p>
+                        <button v-if="item.decision !== 'send' || !item.correction" type="button" class="ui-button mt-2 text-xs" @click="trainCorrection(chatTranscript[index - 1]?.body ?? '')">
+                            {{ labels.knowledge_train_answer }}
+                        </button>
+                    </div>
+                </template>
+            </div>
+            <form class="grid gap-2 border-t border-line p-3" @submit.prevent="askChat">
+                <p v-if="chatError" role="alert" class="text-xs text-danger">{{ labels.knowledge_chat_failed }}</p>
+                <textarea v-model="chatMessage" rows="2" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-[13px]" :placeholder="labels.knowledge_chat_placeholder" :disabled="chatBusy" />
+                <button type="submit" class="ui-button ui-button-primary justify-self-end" :disabled="chatBusy || !chatMessage.trim()">{{ labels.knowledge_chat_ask }}</button>
+            </form>
+        </section>
+
+        <section class="mt-3 rounded-lg border border-line bg-surface p-3" aria-labelledby="knowledge-corrections-title">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                    <h2 id="knowledge-corrections-title" class="flex items-center gap-2 text-sm font-semibold"><AppIcon name="edit" class="text-muted" />{{ labels.knowledge_corrections_title }}</h2>
+                    <p class="mt-0.5 text-xs text-muted">{{ labels.knowledge_corrections_help }}</p>
+                </div>
+                <button type="button" class="ui-button" @click="trainCorrection('')">{{ labels.knowledge_add_correction }}</button>
+            </div>
+            <EmptyState v-if="!corrections.length" icon="book" :title="labels.knowledge_no_corrections" />
+            <ul v-else class="divide-y divide-line">
+                <li v-for="item in corrections" :key="item.id" class="flex flex-wrap items-start justify-between gap-2 py-2">
+                    <div class="min-w-0">
+                        <p class="wrap-anywhere text-sm font-medium">{{ item.question }}</p>
+                        <p class="wrap-anywhere mt-0.5 text-xs text-muted">{{ item.answer }}</p>
+                        <p class="mt-1 text-xs text-muted">
+                            <span class="rounded-full px-2 py-0.5" :class="item.enabled ? 'bg-success/10 text-success' : 'bg-page'">{{ labels[item.enabled ? 'enabled' : 'disabled'] }}</span>
+                            · {{ item.collection_id ? (collections.data.find(({ id }) => id === item.collection_id)?.name ?? labels.knowledge_collection_scope) : labels.knowledge_correction_global }}
+                        </p>
+                    </div>
+                    <div class="flex shrink-0 gap-2">
+                        <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="toggleCorrection(item)">{{ labels[item.enabled ? 'disable' : 'enable'] }}</button>
+                        <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="deleteCorrection(item)">{{ labels.delete }}</button>
+                    </div>
+                </li>
+            </ul>
+        </section>
 
         <section v-if="collection" class="mt-3 rounded-lg border border-line bg-surface p-3" aria-labelledby="knowledge-documents-title">
             <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -250,6 +404,28 @@ function save() {
             </ul>
         </section>
 
+        <SlideOver v-if="correctionPanel" :title="labels.knowledge_train_title" :close-label="labels.close" :busy="correctionForm.processing" @close="correctionPanel = false">
+            <form :id="`${formId}-correction`" class="grid gap-3" @submit.prevent="saveCorrection">
+                <p class="text-xs text-muted">{{ labels.knowledge_train_help }}</p>
+                <FormField v-slot="attrs" :label="labels.knowledge_correction_question" :error="correctionForm.errors.question" required>
+                    <textarea v-bind="attrs" v-model="correctionForm.question" rows="2" maxlength="500" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
+                </FormField>
+                <FormField v-slot="attrs" :label="labels.knowledge_correction_answer" :error="correctionForm.errors.answer" required>
+                    <textarea v-bind="attrs" v-model="correctionForm.answer" rows="4" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
+                </FormField>
+                <FormField v-slot="attrs" :label="labels.knowledge_correction_scope">
+                    <select v-bind="attrs" v-model="correctionForm.collection_id" class="ui-input">
+                        <option :value="null">{{ labels.knowledge_correction_global }}</option>
+                        <option v-for="row in collections.data" :key="row.id" :value="row.id">{{ row.name }}</option>
+                    </select>
+                </FormField>
+            </form>
+            <template #footer>
+                <button type="button" class="ui-button" :disabled="correctionForm.processing" @click="correctionPanel = false">{{ labels.cancel }}</button>
+                <button type="submit" :form="`${formId}-correction`" class="ui-button ui-button-primary" :disabled="correctionForm.processing">{{ labels.save }}</button>
+            </template>
+        </SlideOver>
+
         <SlideOver v-if="documentPanel && editingDocument" :title="labels.knowledge_edit_document" :close-label="labels.close" :busy="documentForm.processing" @close="documentPanel = false">
             <form :id="`${formId}-document`" class="grid gap-3" @submit.prevent="saveDocument(editingDocument.id)">
                 <p class="wrap-anywhere text-sm text-muted">{{ editingDocument.name }}</p>
@@ -289,6 +465,10 @@ function save() {
                 <FormField v-if="panel === 'collection'" v-slot="attrs" :label="labels.name" :error="form.errors.name" required class="sm:col-span-2">
                     <input v-bind="attrs" v-model="form.name" class="ui-input" maxlength="255" autofocus>
                 </FormField>
+                <FormField v-if="panel === 'collection'" v-slot="attrs" :label="labels.knowledge_keywords" :error="form.errors.keywords" class="sm:col-span-2">
+                    <input v-bind="attrs" v-model="collectionForm.keywords" class="ui-input" maxlength="1200" :placeholder="labels.knowledge_keywords_placeholder">
+                </FormField>
+                <p v-if="panel === 'collection'" class="-mt-2 text-xs text-muted sm:col-span-2">{{ labels.knowledge_keywords_help }}</p>
                 <template v-else>
                     <FormField v-slot="attrs" :label="labels.knowledge_kind" :error="form.errors.kind" required>
                         <select v-bind="attrs" v-model="entryForm.kind" class="ui-input" :disabled="editing !== null" @change="entryForm.amount_type = 'fixed'">

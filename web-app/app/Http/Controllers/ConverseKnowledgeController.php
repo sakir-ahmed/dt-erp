@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\ComposeConverseReply;
 use App\Actions\RecordConverseAudit;
 use App\Jobs\IndexConverseDocument;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -23,7 +25,7 @@ class ConverseKnowledgeController extends Controller
     public function index(Request $request): Response
     {
         $collections = $this->collections($request)->orderBy('name')->orderBy('id')
-            ->simplePaginate(25, ['id', 'name', 'enabled'], 'collections_page')->withQueryString();
+            ->simplePaginate(25, ['id', 'name', 'enabled', 'keywords'], 'collections_page')->withQueryString();
         $selected = $request->integer('collection', (int) ($collections->items()[0]->id ?? 0));
         $collection = $selected > 0 ? $this->collections($request)->where('id', $selected)->first() : null;
         abort_if($selected > 0 && $collection === null, 404);
@@ -38,6 +40,10 @@ class ConverseKnowledgeController extends Controller
             'documents' => $collection ? DB::table('cv_knowledge_documents')->where('collection_id', $collection->id)
                 ->orderByDesc('priority')->orderByDesc('id')
                 ->get(['id', 'name', 'format', 'language', 'enabled', 'public', 'status', 'error', 'valid_from', 'valid_to', 'priority']) : [],
+            'corrections' => $collection ? DB::table('cv_knowledge_corrections')
+                ->where(fn (Builder $query) => $query->whereNull('collection_id')->orWhere('collection_id', $collection->id))
+                ->orderByRaw('collection_id is null')->orderByDesc('id')->limit(50)
+                ->get(['id', 'collection_id', 'question', 'answer', 'enabled']) : [],
             'subjects' => $collection ? DB::table('cv_knowledge_entries')->where('collection_id', $collection->id)
                 ->whereIn('kind', ['product', 'service'])->orderBy('title')->get(['id', 'title']) : [],
             'kinds' => self::KINDS,
@@ -46,7 +52,12 @@ class ConverseKnowledgeController extends Controller
 
     public function saveCollection(Request $request, RecordConverseAudit $audit, ?int $collection = null): RedirectResponse
     {
-        $data = $request->validate(['name' => ['required', 'string', 'max:255'], 'enabled' => ['required', 'boolean']]);
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'], 'enabled' => ['required', 'boolean'],
+            'keywords' => ['nullable', 'array', 'max:20'],
+            'keywords.*' => ['required', 'string', 'min:2', 'max:60'],
+        ]);
+        $data['keywords'] = ($data['keywords'] ?? []) === [] ? null : json_encode(array_values(array_unique($data['keywords'])));
         $id = DB::transaction(function () use ($request, $audit, $collection, $data): int {
             $values = [...$data, 'updated_at' => now()];
             if ($collection === null) {
@@ -234,6 +245,100 @@ class ConverseKnowledgeController extends Controller
         }
 
         return to_route('converse.knowledge', ['collection' => $collection]);
+    }
+
+    /**
+     * Test chat: ask a question against one collection or all of them and
+     * inspect the grounded answer without sending anything to a customer.
+     */
+    public function chat(Request $request, ComposeConverseReply $compose): JsonResponse
+    {
+        $data = $request->validate([
+            'message' => ['required', 'string', 'min:2', 'max:2000'],
+            'collection' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $scope = $this->collections($request)->where('enabled', true)->pluck('id')->all();
+        if (($data['collection'] ?? null) !== null) {
+            $scope = array_values(array_intersect($scope, [(int) $data['collection']]));
+            abort_if($scope === [], 404);
+        }
+        abort_if($scope === [], 422);
+
+        $turn = $compose(collect([(object) ['direction' => 'in', 'body' => $data['message']]]), [
+            'collections' => $scope, 'agent' => 'sales', 'memory' => [], 'sandbox' => false,
+        ]);
+
+        $sources = DB::table('cv_knowledge_entries')->whereIn('id', $turn['source_ids'] ?? [])
+            ->get(['id', 'title', 'kind'])->all();
+
+        return response()->json(['reply' => [
+            'body' => $turn['body'], 'decision' => $turn['decision'], 'language' => $turn['language'],
+            'intent' => $turn['intent'], 'provider' => $turn['provider'] ?? null, 'model' => $turn['model'] ?? null,
+            'correction' => ($turn['correction'] ?? false) === true, 'sources' => $sources,
+        ]]);
+    }
+
+    public function storeCorrection(Request $request, RecordConverseAudit $audit): RedirectResponse
+    {
+        $data = $request->validate([
+            'collection_id' => ['nullable', 'integer', 'min:1',
+                Rule::exists('cv_knowledge_collections', 'id')->where(fn (Builder $query) => $query
+                    ->where('is_demo', (bool) $request->user()->is_demo)->where('enabled', true))],
+            'question' => ['required', 'string', 'min:4', 'max:500'],
+            'answer' => ['required', 'string', 'min:2', 'max:2000'],
+        ]);
+
+        $id = DB::table('cv_knowledge_corrections')->insertGetId([
+            ...$data, 'owner_id' => $request->user()->id, 'enabled' => true,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $audit($request->user()->id, 'knowledge.correction_created', 'knowledge_correction', $id, $data);
+        Inertia::flash('success', __('workspace.knowledge_correction_saved'));
+
+        return back();
+    }
+
+    public function updateCorrection(Request $request, RecordConverseAudit $audit, int $correction): RedirectResponse
+    {
+        $data = $request->validate([
+            'question' => ['sometimes', 'string', 'min:4', 'max:500'],
+            'answer' => ['sometimes', 'string', 'min:2', 'max:2000'],
+            'enabled' => ['sometimes', 'boolean'],
+        ]);
+        $scope = $this->correctionScope($request);
+
+        DB::transaction(function () use ($scope, $correction, $data, $audit, $request): void {
+            $current = (clone $scope)->where('id', $correction)->lockForUpdate()->firstOrFail();
+            (clone $scope)->where('id', $correction)->update([...$data, 'updated_at' => now()]);
+            $audit($request->user()->id, 'knowledge.correction_updated', 'knowledge_correction', $correction, $data);
+        });
+        Inertia::flash('success', __('workspace.knowledge_correction_saved'));
+
+        return back();
+    }
+
+    public function destroyCorrection(Request $request, RecordConverseAudit $audit, int $correction): RedirectResponse
+    {
+        $scope = $this->correctionScope($request);
+        $deleted = DB::transaction(function () use ($scope, $correction): int {
+            (clone $scope)->where('id', $correction)->lockForUpdate()->firstOrFail();
+
+            return (clone $scope)->where('id', $correction)->delete();
+        });
+        if ($deleted > 0) {
+            $audit($request->user()->id, 'knowledge.correction_deleted', 'knowledge_correction', $correction, []);
+        }
+
+        return back();
+    }
+
+    private function correctionScope(Request $request): Builder
+    {
+        $collectionIds = $this->collections($request)->pluck('id')->all();
+
+        return DB::table('cv_knowledge_corrections')
+            ->where(fn (Builder $query) => $query->whereNull('collection_id')->orWhereIn('collection_id', $collectionIds));
     }
 
     private function collections(Request $request): Builder
