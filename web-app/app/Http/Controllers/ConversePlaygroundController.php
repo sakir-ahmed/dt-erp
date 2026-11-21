@@ -121,6 +121,13 @@ class ConversePlaygroundController extends Controller
             'rules.*.when.intent' => ['sometimes', Rule::in(['greeting', 'human_request', 'price', 'offer', 'support', 'sales_request', 'inquiry'])],
             'rules.*.model' => ['required', ...array_slice($model, 1)],
             'rules.*.fallback_model' => $model,
+            'cloud' => ['sometimes', 'required', 'array:live,models'],
+            'cloud.live' => ['required_with:cloud', 'boolean'],
+            'cloud.models' => ['present_with:cloud', 'array', 'list', 'max:8'],
+            'cloud.models.*' => ['required', 'array:provider,model,tier'],
+            'cloud.models.*.provider' => ['required', Rule::in(['openrouter', 'deepseek', 'openai', 'anthropic'])],
+            'cloud.models.*.model' => ['required', 'string', 'max:150', 'regex:~^[A-Za-z0-9][A-Za-z0-9_.:/-]*$~D'],
+            'cloud.models.*.tier' => ['required', Rule::in(['free', 'economy', 'advanced'])],
         ])->validate();
 
         foreach (array_keys($data['agents']) as $agent) {
@@ -129,11 +136,20 @@ class ConversePlaygroundController extends Controller
         foreach ($data['rules'] as $rule) {
             abort_if(isset($rule['when']['agent']) && ! array_key_exists($rule['when']['agent'], $data['agents']), 422);
         }
+        foreach ($data['cloud']['models'] ?? [] as $candidate) {
+            abort_if($candidate['tier'] === 'free' && ($candidate['provider'] !== 'openrouter'
+                || ! str_ends_with($candidate['model'], ':free')), 422, 'Free routing requires an OpenRouter :free model.');
+        }
 
         DB::transaction(function () use ($request, $audit, $data): void {
-            DB::table('cv_ai_settings')->where('id', 1)->update(['routing' => json_encode($data, JSON_THROW_ON_ERROR)]);
+            $table = DB::table('cv_ai_settings')->where('id', 1);
+            $saved = $table->lockForUpdate()->firstOrFail();
+            $routing = json_decode($saved->routing ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+            $data += array_intersect_key($routing, ['cloud' => true]);
+            $table->update(['routing' => json_encode($data, JSON_THROW_ON_ERROR)]);
             $audit($request->user()->id, 'ai.routing_saved', 'ai_settings', 1, [
                 'agent_keys' => array_keys($data['agents']), 'rule_count' => count($data['rules']),
+                'cloud' => $data['cloud'] ?? null,
             ]);
         });
 
@@ -172,6 +188,7 @@ class ConversePlaygroundController extends Controller
             'language' => ['required', Rule::in(array_keys(self::SAMPLES))],
             'local_only' => ['required', 'boolean'],
             'sandbox' => ['sometimes', 'boolean'],
+            'complex' => ['sometimes', 'boolean'],
         ]);
         if ($data['sandbox'] ?? false) {
             $collection = $this->sandboxCollection();
@@ -197,6 +214,7 @@ class ConversePlaygroundController extends Controller
             "This is an isolated routing test. Write a single sample acknowledgement in {$language}. Do not promise any action, name a product, or claim a handoff actually happened.",
             self::SAMPLES[$data['language']],
             $localOnly,
+            complex: $data['complex'] ?? false,
         );
 
         return response()->json(['draft' => $result]);

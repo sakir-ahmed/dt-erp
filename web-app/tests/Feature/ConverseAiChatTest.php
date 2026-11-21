@@ -41,6 +41,25 @@ function aiChatInbound(int $account, string $message, string $body): int
     return app(RecordConverseInboundMessage::class)($account, '8801000000202', $message, $body, now());
 }
 
+it('answers a documented integration question before escalating to staff', function () {
+    [$account, $collection] = aiChatFixture();
+    $entry = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'faq', 'title' => 'Kitchen display integration',
+        'body' => 'POS tickets appear on the kitchen display.', 'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    Http::fake([
+        'http://127.0.0.1:11434/api/chat' => Http::response([
+            'done' => true, 'done_reason' => 'stop', 'message' => ['content' => json_encode(['source_id' => $entry, 'confidence' => 0.95])],
+        ]),
+        'https://graph.facebook.com/*' => Http::response(['message_id' => 'reply']),
+    ]);
+
+    dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'integration', 'Does the POS connect with the kitchen display?')));
+
+    $this->assertDatabaseHas('cv_ai_turns', ['provider' => 'ollama', 'decision' => 'send']);
+    $this->assertDatabaseHas('cv_messages', ['body' => 'POS tickets appear on the kitchen display.']);
+});
+
 it('combines recent inbound context and sends one verified structured price in the latest language', function (string $question, string $language, string $amount, string $channel) {
     [$account, $collection] = aiChatFixture($channel);
     $product = DB::table('cv_knowledge_entries')->insertGetId([
@@ -141,6 +160,76 @@ it('uses a configured local fallback model without cloud disclosure', function (
     $this->assertDatabaseHas('cv_messages', ['body' => 'ERP tracks business workflows.', 'delivery_status' => 'accepted']);
     Http::assertSent(fn (Request $request) => str_contains($request->url(), '127.0.0.1') && $request['model'] === 'fixture-fallback');
     Http::assertNotSent(fn (Request $request) => str_contains($request->url(), 'api.openai.com'));
+});
+
+it('tries both local models before cloud and promotes only complex questions to the advanced tier', function (bool $complex) {
+    [$account, $collection] = aiChatFixture();
+    config([
+        'converse.ai.primary' => 'openai',
+        'converse.ai.ollama_fallback_model' => 'fixture-strong',
+        'converse.ai.cloud_keys.openrouter' => 'fixture-router',
+        'converse.ai.cloud_keys.deepseek' => 'fixture-deepseek',
+        'converse.ai.cloud_keys.anthropic' => 'fixture-claude',
+        'converse.ai.cloud' => ['live' => true, 'models' => [
+            ['provider' => 'anthropic', 'model' => 'fixture-advanced', 'tier' => 'advanced'],
+            ['provider' => 'deepseek', 'model' => 'fixture-economy', 'tier' => 'economy'],
+            ['provider' => 'openrouter', 'model' => 'fixture/model:free', 'tier' => 'free'],
+        ]],
+    ]);
+    $entry = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'faq', 'title' => 'Kitchen display',
+        'body' => 'POS tickets appear on the kitchen display.', 'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    $requestOrder = [];
+    Http::fake(function (Request $request) use (&$requestOrder, $entry) {
+        $host = parse_url($request->url(), PHP_URL_HOST);
+        $requestOrder[] = $request['model'] ?? $host;
+        if ($host === 'api.anthropic.com') {
+            return Http::response(['stop_reason' => 'end_turn', 'content' => [
+                ['type' => 'text', 'text' => json_encode(['source_ids' => [$entry], 'confidence' => 0.97])],
+            ]]);
+        }
+        if ($host === 'graph.facebook.com') {
+            return Http::response(['message_id' => 'reply']);
+        }
+
+        return Http::response([], 503);
+    });
+
+    $message = $complex ? 'Can you explain the kitchen display workflow?' : 'Tell me about the kitchen display.';
+    aiChatInbound($account, 'contact', 'My email is guest@example.com and my phone is +880 1712-345678.');
+    dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'm1', $message)));
+
+    expect($requestOrder)->toBe([
+        'fixture', 'fixture-strong', 'fixture/model:free', 'fixture-economy',
+        ...($complex ? ['fixture-advanced'] : []), 'graph.facebook.com',
+    ]);
+    $this->assertDatabaseHas('cv_ai_turns', [
+        'provider' => $complex ? 'anthropic' : null, 'decision' => $complex ? 'send' : 'handoff',
+    ]);
+    Http::assertSent(fn (Request $request) => str_contains($request->url(), 'openrouter.ai')
+        && $request['provider']['zdr'] === true
+        && str_contains($request['messages'][1]['content'], 'kitchen display')
+        && ! str_contains($request['messages'][1]['content'], 'guest@example.com')
+        && ! str_contains($request['messages'][1]['content'], '345678'));
+})->with([true, false]);
+
+it('keeps credential-related questions on Ollama even with live cloud enabled', function () {
+    [$account, $collection] = aiChatFixture();
+    config(['converse.ai.cloud.live' => true]);
+    DB::table('cv_knowledge_entries')->insert([
+        'collection_id' => $collection, 'kind' => 'faq', 'title' => 'POS error',
+        'body' => 'Open the POS screen again and check the shift.', 'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    Http::fake([
+        'http://127.0.0.1:11434/api/chat' => Http::response([], 503),
+        'https://graph.facebook.com/*' => Http::response(['message_id' => 'reply']),
+    ]);
+
+    dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'm1', 'Why do I get an error with my POS PIN?')));
+
+    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'handoff']);
+    Http::assertSentCount(2);
 });
 
 it('checks human takeover again after model generation', function () {

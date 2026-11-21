@@ -27,7 +27,7 @@ class ReplyToConverseTurn implements ShouldQueue
 
     public function middleware(): array
     {
-        return [(new WithoutOverlapping((string) $this->inboundMessageId))->releaseAfter(5)->expireAfter(60)];
+        return [(new WithoutOverlapping((string) $this->inboundMessageId))->releaseAfter(5)->expireAfter(90)];
     }
 
     public function handle(ComposeConverseReply $compose, SendConverseReply $send, RetrieveConverseKnowledge $knowledge, ConverseAiSettings $configuration, TagConverseAiConversation $tag): void

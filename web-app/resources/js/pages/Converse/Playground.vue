@@ -18,7 +18,7 @@ const props = defineProps({
 });
 
 const page = usePage();
-const form = useHttp({ language: 'en', local_only: true, sandbox: false });
+const form = useHttp({ language: 'en', local_only: true, sandbox: false, complex: false });
 const providers = useForm({
     primary: props.providerSettings?.primary ?? 'ollama',
     allow_cloud: props.providerSettings?.allow_cloud ?? false,
@@ -31,7 +31,11 @@ const providers = useForm({
     remove_openai_key: false,
 });
 const routing = useForm({
-    routing: JSON.stringify({ agents: props.providerSettings?.agents ?? {}, rules: props.providerSettings?.rules ?? [] }, null, 2),
+    routing: JSON.stringify({
+        agents: props.providerSettings?.agents ?? {},
+        rules: props.providerSettings?.rules ?? [],
+        cloud: props.providerSettings?.cloud ?? { live: false, models: [] },
+    }, null, 2),
 });
 const channel = useForm({ id: '', enabled: false, agent: '', collections: [] });
 const readiness = computed(() => {
@@ -130,6 +134,9 @@ async function run() {
                         <input v-model="providers.allow_cloud" type="checkbox" class="accent-brand">
                         {{ page.props.labels.ai_allow_cloud_samples }}
                     </label>
+                    <p class="text-xs text-muted sm:col-span-2">
+                        {{ page.props.labels.ai_cloud_connected }} {{ providerSettings.cloud_providers.join(', ') || page.props.labels.ai_cloud_none }}
+                    </p>
                     <button type="submit" :disabled="providers.processing" class="ui-button justify-self-start">{{ page.props.labels.save }}</button>
                 </form>
             </section>
@@ -172,6 +179,7 @@ async function run() {
         <section v-if="providerSettings" class="mb-4 rounded-lg border border-line bg-surface p-4" aria-labelledby="ai-routing-title">
             <h2 id="ai-routing-title" class="mb-2 font-semibold">{{ page.props.labels.ai_routing_settings }}</h2>
             <p class="mb-3 text-xs text-muted">{{ page.props.labels.ai_routing_help }}</p>
+            <p class="mb-3 text-xs text-muted">{{ page.props.labels.ai_cloud_routing_help }}</p>
             <form class="grid gap-2" @submit.prevent="routing.patch('/converse/playground/routing', { preserveScroll: true })">
                 <FormField v-slot="attrs" :label="page.props.labels.ai_routing_json" :error="Object.values(routing.errors)[0]" required>
                     <textarea v-bind="attrs" v-model="routing.routing" class="ui-input min-h-44 font-mono" spellcheck="false" maxlength="30000" />
@@ -198,6 +206,10 @@ async function run() {
                 <label v-if="cloudAvailable && !form.sandbox" class="flex items-center gap-2 text-sm">
                     <input v-model="form.local_only" type="checkbox" class="accent-brand" :disabled="form.processing">
                     {{ page.props.labels.playground_local }}
+                </label>
+                <label v-if="cloudAvailable && !form.sandbox && !form.local_only" class="flex items-center gap-2 text-sm">
+                    <input v-model="form.complex" type="checkbox" class="accent-brand" :disabled="form.processing">
+                    {{ page.props.labels.ai_test_advanced }}
                 </label>
                 <button type="submit" class="ui-button ui-button-primary" :disabled="form.processing">
                     {{ page.props.labels[form.processing ? 'playground_running' : 'playground_run'] }}

@@ -14,7 +14,8 @@ test('the initial cursor and repeated polls do not replay events', () => {
 });
 
 test('new messages, accepted replies and human handoff have distinct cues', () => {
-    assert.deepEqual(Object.values(converseNotificationCues).map(({ notes }) => notes.length), [1, 2, 3]);
+    const cues = ['ai_inbound', 'ai_reply', 'human_handoff'];
+    assert.deepEqual(cues.map((type) => converseNotificationCues[type].notes.length), [1, 2, 3]);
     const frequencies = [];
     const context = {
         createOscillator: () => ({
@@ -25,7 +26,6 @@ test('new messages, accepted replies and human handoff have distinct cues', () =
         }),
         createGain: () => ({ gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }),
     };
-    const cues = Object.keys(converseNotificationCues);
     const durations = cues.map((type) => scheduleConverseSound(context, type, 1) - 1);
     assert.ok(durations[2] > durations[1] && durations[1] > durations[0]);
     assert.ok(converseNotificationCues.human_handoff.volume > converseNotificationCues.ai_reply.volume);

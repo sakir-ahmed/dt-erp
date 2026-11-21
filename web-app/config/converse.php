@@ -13,6 +13,12 @@ return [
         ],
         'channels' => [],
         'rules' => [],
+        'cloud' => ['live' => false, 'models' => []],
+        'cloud_keys' => [
+            'openrouter' => env('CONVERSE_OPENROUTER_API_KEY'),
+            'deepseek' => env('CONVERSE_DEEPSEEK_API_KEY'),
+            'anthropic' => env('CONVERSE_ANTHROPIC_API_KEY'),
+        ],
         'embedding_model' => env('CONVERSE_EMBEDDING_MODEL'),
         'primary' => env('CONVERSE_AI_PRIMARY', 'ollama'),
         'allow_cloud' => env('CONVERSE_AI_ALLOW_CLOUD', false),

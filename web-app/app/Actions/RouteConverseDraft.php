@@ -10,34 +10,41 @@ class RouteConverseDraft
     public function __construct(private ConverseAiSettings $configuration) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null): ?array
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false): ?array
     {
         $settings = $this->configuration->get();
-        $cloudAllowed = ! $localOnly && $settings['allow_cloud'] === true;
-        $primary = $cloudAllowed && ($preferred ?? $settings['primary']) === 'openai' ? 'openai' : 'ollama';
-        $providers = $cloudAllowed ? [$primary, $primary === 'openai' ? 'ollama' : 'openai'] : ['ollama'];
-
-        $ollamaModel = $localModel ?? $settings['ollama_model'];
-        $brains = array_map(fn (string $provider): array => [$provider, $provider === 'ollama' ? $ollamaModel : $settings['openai_model']], $providers);
-        $localFallback ??= $settings['ollama_fallback_model'];
-        if (is_string($localFallback) && $localFallback !== $ollamaModel) {
-            $brains[] = ['ollama', $localFallback];
-        }
-
-        $deadline = $localBudget === null ? null : hrtime(true) + $localBudget * 1_000_000_000;
-        foreach ($brains as $index => [$provider, $model]) {
-            if (! is_string($model) || trim($model) === '') {
+        $local = array_values(array_unique(array_filter([
+            $localModel ?? $settings['ollama_model'],
+            $localFallback ?? $settings['ollama_fallback_model'],
+            $settings['ollama_fallback_model'],
+        ], fn (?string $model): bool => filled($model))));
+        $cloud = $localOnly || $settings['allow_cloud'] !== true ? [] : $this->cloudCandidates($settings, $complex);
+        $cloudFirst = $cloudInput === null && ($preferred ?? $settings['primary']) === 'openai';
+        $local = array_map(fn (string $model): array => ['ollama', $model, null], array_slice($local, 0, 2));
+        $candidates = $cloudFirst ? [...$cloud, ...$local] : [...$local, ...$cloud];
+        $budget = $localBudget ?? 36;
+        $localDeadline = null;
+        $cloudDeadline = null;
+        foreach ($candidates as $index => [$provider, $model, $key]) {
+            if ($provider === 'ollama') {
+                $localDeadline ??= hrtime(true) + $budget * 1_000_000_000;
+                $reserve = count($local) > 1 && $model === $local[0][1] ? max(0, $budget - 15) : 0;
+                $timeout = ($localDeadline - hrtime(true)) / 1_000_000_000 - $reserve;
+            } else {
+                $cloudDeadline ??= hrtime(true) + 21 * 1_000_000_000;
+                $timeout = min(9, ($cloudDeadline - hrtime(true)) / 1_000_000_000);
+            }
+            if ($timeout < 1) {
                 continue;
             }
-
-            $timeout = $deadline === null ? 45 : min(45, ($deadline - hrtime(true)) / 1_000_000_000);
-            if ($timeout <= 0) {
-                return null;
-            }
             try {
-                $text = $provider === 'openai'
-                    ? $this->openAi($model, $instructions, $input, $settings['openai_key'])
-                    : $this->ollama($model, $instructions, $input, (int) $settings['ollama_port'], $accept !== null, $timeout);
+                $externalInput = $cloudInput ?? $input;
+                $text = match ($provider) {
+                    'ollama' => $this->ollama($model, $instructions, $input, (int) $settings['ollama_port'], $accept !== null, $timeout),
+                    'openai' => $this->openAi($model, $instructions, $externalInput, $key, $timeout),
+                    'anthropic' => $this->anthropic($model, $instructions, $externalInput, $key, $timeout),
+                    default => $this->chatCompletions($provider, $model, $instructions, $externalInput, $key, $accept !== null, $timeout),
+                };
             } catch (ConnectionException) {
                 continue;
             }
@@ -48,6 +55,29 @@ class RouteConverseDraft
         }
 
         return null;
+    }
+
+    private function cloudCandidates(array $settings, bool $complex): array
+    {
+        $keys = [...$settings['cloud_keys'], 'openai' => $settings['openai_key']];
+        $models = $settings['cloud']['models'];
+        if ($models === []) {
+            $models = [['provider' => 'openai', 'model' => $settings['openai_model'], 'tier' => 'economy']];
+        }
+        $candidates = [];
+        foreach ($complex ? ['free' => 1, 'economy' => 1, 'advanced' => 1] : ['free' => 1, 'economy' => 2] as $tier => $limit) {
+            $tierCandidates = [];
+            foreach ($models as $candidate) {
+                $provider = $candidate['provider'];
+                $model = $candidate['model'];
+                if ($candidate['tier'] === $tier && filled($model) && filled($keys[$provider] ?? null)) {
+                    $tierCandidates["{$provider}/{$model}"] = [$provider, $model, $keys[$provider]];
+                }
+            }
+            $candidates = [...$candidates, ...array_slice(array_values($tierCandidates), 0, $limit)];
+        }
+
+        return $candidates;
     }
 
     private function ollama(string $model, string $instructions, string $input, int $port, bool $structured, float $timeout): ?string
@@ -67,8 +97,9 @@ class RouteConverseDraft
             ->post("http://127.0.0.1:{$port}/api/chat", [
                 'model' => $model,
                 'stream' => false,
+                'keep_alive' => '20m',
                 ...($structured ? ['format' => 'json'] : []),
-                'options' => ['num_predict' => 250, ...($structured ? ['temperature' => 0] : [])],
+                'options' => ['num_ctx' => 8192, 'num_predict' => 250, ...($structured ? ['temperature' => 0] : [])],
                 'messages' => [
                     ['role' => 'system', 'content' => $instructions],
                     ['role' => 'user', 'content' => $input],
@@ -80,14 +111,10 @@ class RouteConverseDraft
             ? $this->validatedText($response->json('message.content')) : null;
     }
 
-    private function openAi(string $model, string $instructions, string $input, ?string $key): ?string
+    private function openAi(string $model, string $instructions, string $input, string $key, float $timeout): ?string
     {
-        if (! is_string($key) || trim($key) === '') {
-            return null;
-        }
-
         $response = Http::asJson()->acceptJson()->withoutRedirecting()->withToken($key)
-            ->connectTimeout(3)->timeout(12)
+            ->connectTimeout(3)->timeout($timeout)
             ->post('https://api.openai.com/v1/responses', [
                 'model' => $model,
                 'instructions' => $instructions,
@@ -118,6 +145,41 @@ class RouteConverseDraft
         }
 
         return $this->validatedText(implode("\n", $parts));
+    }
+
+    private function chatCompletions(string $provider, string $model, string $instructions, string $input, string $key, bool $structured, float $timeout): ?string
+    {
+        $openRouter = $provider === 'openrouter';
+        $response = Http::asJson()->acceptJson()->withoutRedirecting()->withToken($key)
+            ->connectTimeout(3)->timeout($timeout)
+            ->post($openRouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.deepseek.com/chat/completions', [
+                'model' => $model, 'max_tokens' => 350, 'stream' => false,
+                ...($structured ? ['response_format' => ['type' => 'json_object']] : []),
+                ...($openRouter ? ['provider' => ['sort' => 'price', 'data_collection' => 'deny', 'zdr' => true,
+                    'require_parameters' => true]] : ['thinking' => ['type' => 'disabled']]),
+                'messages' => [
+                    ['role' => 'system', 'content' => $instructions],
+                    ['role' => 'user', 'content' => $input],
+                ],
+            ]);
+
+        return $response->successful() && $response->json('choices.0.finish_reason') === 'stop'
+            ? $this->validatedText($response->json('choices.0.message.content')) : null;
+    }
+
+    private function anthropic(string $model, string $instructions, string $input, string $key, float $timeout): ?string
+    {
+        $response = Http::asJson()->acceptJson()->withoutRedirecting()->withHeaders([
+            'x-api-key' => $key, 'anthropic-version' => '2023-06-01',
+        ])->connectTimeout(3)->timeout($timeout)->post('https://api.anthropic.com/v1/messages', [
+            'model' => $model, 'max_tokens' => 350, 'system' => $instructions,
+            'messages' => [['role' => 'user', 'content' => $input]],
+        ]);
+        if (! $response->successful() || $response->json('stop_reason') !== 'end_turn') {
+            return null;
+        }
+
+        return $this->validatedText(collect($response->json('content', []))->where('type', 'text')->pluck('text')->implode("\n"));
     }
 
     private function validatedText(mixed $text): ?string

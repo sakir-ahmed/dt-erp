@@ -19,7 +19,7 @@ class ConverseAiSettings
         }
         if ($saved?->routing) {
             $routing = json_decode($saved->routing, true, flags: JSON_THROW_ON_ERROR);
-            $settings = array_replace($settings, array_intersect_key($routing, array_flip(['agents', 'rules'])));
+            $settings = array_replace($settings, array_intersect_key($routing, array_flip(['agents', 'rules', 'cloud'])));
         }
         if ($saved?->channels) {
             $settings['channels'] = array_replace($settings['channels'], json_decode($saved->channels, true, flags: JSON_THROW_ON_ERROR));
@@ -49,8 +49,12 @@ class ConverseAiSettings
 
         return [
             ...array_intersect_key($settings, array_flip(['primary', 'allow_cloud', 'ollama_model',
-                'ollama_fallback_model', 'ollama_port', 'openai_model', 'channels', 'auto_reply', 'agents', 'rules', 'embedding_model'])),
+                'ollama_fallback_model', 'ollama_port', 'openai_model', 'channels', 'auto_reply', 'agents', 'rules', 'cloud', 'embedding_model'])),
             'has_openai_key' => is_string($settings['openai_key']) && $settings['openai_key'] !== '',
+            'cloud_providers' => array_keys(array_filter(
+                [...$settings['cloud_keys'], 'openai' => $settings['openai_key']],
+                fn (?string $key): bool => filled($key),
+            )),
         ];
     }
 }
