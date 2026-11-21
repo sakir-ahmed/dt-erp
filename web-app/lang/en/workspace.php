@@ -184,7 +184,7 @@ return [
     'knowledge_train_answer' => 'Train the correct answer',
     'knowledge_train_title' => 'Train a correction',
     'knowledge_train_help' => 'Corrections answer matching questions verbatim, before the model or knowledge search runs.',
-    'knowledge_correction_question' => 'Customer question',
+    'knowledge_correction_question' => 'Customer question or phrases separated by |',
     'knowledge_correction_answer' => 'Expected answer',
     'knowledge_correction_scope' => 'Applies to',
     'knowledge_correction_global' => 'All collections',

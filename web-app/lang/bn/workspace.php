@@ -184,7 +184,7 @@ return [
     'knowledge_train_answer' => 'সঠিক উত্তর শেখান',
     'knowledge_train_title' => 'সংশোধন শেখান',
     'knowledge_train_help' => 'সংশোধন মিলে যাওয়া প্রশ্নের উত্তর মডেল বা জ্ঞান অনুসন্ধানের আগেই হুবহু দেয়।',
-    'knowledge_correction_question' => 'গ্রাহকের প্রশ্ন',
+    'knowledge_correction_question' => 'গ্রাহকের প্রশ্ন বা | দিয়ে আলাদা করা একাধিক বাক্যাংশ',
     'knowledge_correction_answer' => 'প্রত্যাশিত উত্তর',
     'knowledge_correction_scope' => 'প্রযোজ্য স্থান',
     'knowledge_correction_global' => 'সব সংগ্রহ',

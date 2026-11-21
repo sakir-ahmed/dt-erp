@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\ComposeConverseReply;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -131,6 +132,85 @@ it('answers matching questions from trained corrections before the model runs', 
         ->assertJsonPath('reply.decision', 'send')
         ->assertJsonPath('reply.correction', true)
         ->assertJsonPath('reply.body', 'Yes, DT ERP answers in Bangla, English and Banglish.');
+    Http::assertNothingSent();
+});
+
+it('answers from the most specific approved question in the named collection', function (string $question, string $answer) {
+    $restora = knowledgeChatCollection('DT Restora', ['restora', 'রেস্টোরা', 'রেস্টোরার']);
+    $other = knowledgeChatCollection('Other software', ['other software']);
+    $admin = User::factory()->create()->assignRole('administrator');
+
+    foreach ([
+        [null, 'sales email', 'Contact the general sales team.'],
+        [$other, 'sales email', 'Email other@example.invalid.'],
+        [$restora, 'sales email | email address', 'You can email DT Restora sales at sales@example.invalid.'],
+        [$restora, 'সেলস ইমেইল', 'সেলস টিমকে sales@example.invalid ঠিকানায় ইমেইল করতে পারেন।'],
+        [$restora, 'demo free', 'Yes, the DT Restora demo is free.'],
+        [$restora, 'monthly price', 'The monthly price is 1,000 BDT per branch.'],
+        [$restora, 'price', 'See the DT Restora price plan.'],
+    ] as [$collection, $phrase, $response]) {
+        DB::table('cv_knowledge_corrections')->insert([
+            'owner_id' => $admin->id, 'collection_id' => $collection, 'question' => $phrase, 'answer' => $response, 'enabled' => true,
+        ]);
+    }
+    Http::fake();
+
+    $this->actingAs($admin)->postJson('/converse/knowledge/chat', ['message' => $question])
+        ->assertOk()
+        ->assertJsonPath('reply.decision', 'send')
+        ->assertJsonPath('reply.provider', 'correction')
+        ->assertJsonPath('reply.body', $answer);
+    Http::assertNothingSent();
+})->with([
+    ['give me sales email for dt-restora', 'You can email DT Restora sales at sales@example.invalid.'],
+    ['What is the DT Restora sales e-mail?', 'You can email DT Restora sales at sales@example.invalid.'],
+    ['What is the email address for DT Restora?', 'You can email DT Restora sales at sales@example.invalid.'],
+    ['রেস্টোরার সেলস ইমেইল কী?', 'সেলস টিমকে sales@example.invalid ঠিকানায় ইমেইল করতে পারেন।'],
+    ['Is the DT Restora demo free?', 'Yes, the DT Restora demo is free.'],
+    ['What is the DT Restora monthly price?', 'The monthly price is 1,000 BDT per branch.'],
+]);
+
+it('uses approved corrections only for whole phrases and preserves human handoff', function (string $question, bool $selected) {
+    $restora = knowledgeChatCollection('DT Restora', ['restora']);
+    knowledgeChatCollection('Other software', ['other software']);
+    $admin = User::factory()->create()->assignRole('administrator');
+    DB::table('cv_knowledge_corrections')->insert([
+        'owner_id' => $admin->id, 'collection_id' => $restora, 'question' => 'sales email',
+        'answer' => 'Email the DT Restora sales team.', 'enabled' => true,
+    ]);
+    Http::fake();
+
+    $this->actingAs($admin)->postJson('/converse/knowledge/chat', [
+        'message' => $question, 'collection' => $selected ? $restora : null,
+    ])->assertOk()->assertJsonPath('reply.decision', 'handoff');
+})->with([
+    ['give me a sales email', false],
+    ['has the team emailed sales emails to everyone', true],
+    ['I want to talk to a human about the sales email', true],
+    ['I want to buy DT Restora, give me the sales email', true],
+]);
+
+it('keeps the product in scope for a follow-up and respects an explicit switch', function () {
+    $restora = knowledgeChatCollection('DT Restora', ['restora']);
+    $other = knowledgeChatCollection('Other software', ['other software']);
+    $admin = User::factory()->create()->assignRole('administrator');
+    foreach ([$restora => 'restora@example.invalid', $other => 'other@example.invalid'] as $collection => $address) {
+        DB::table('cv_knowledge_corrections')->insert([
+            'owner_id' => $admin->id, 'collection_id' => $collection, 'question' => 'sales email',
+            'answer' => $address, 'enabled' => true,
+        ]);
+    }
+    Http::fake();
+    $history = collect([
+        (object) ['direction' => 'in', 'body' => 'I am asking about DT Restora'],
+        (object) ['direction' => 'out', 'body' => 'How can I help?'],
+        (object) ['direction' => 'in', 'body' => 'And the sales email?'],
+    ]);
+    $settings = ['collections' => [$restora, $other], 'agent' => 'sales'];
+    $compose = app(ComposeConverseReply::class);
+    expect($compose($history, $settings)['body'])->toBe('restora@example.invalid');
+    $history->push((object) ['direction' => 'in', 'body' => 'What is the sales email for Other Software?']);
+    expect($compose($history, $settings)['body'])->toBe('other@example.invalid');
     Http::assertNothingSent();
 });
 
