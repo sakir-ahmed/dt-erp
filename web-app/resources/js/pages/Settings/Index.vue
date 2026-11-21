@@ -1,5 +1,5 @@
 <script setup>
-import { Head, useForm, usePage } from '@inertiajs/vue3';
+import { Head, http, useForm, usePage } from '@inertiajs/vue3';
 import { watch } from 'vue';
 import FormField from '../../components/ui-kit/FormField.vue';
 import ConverseAiSettings from '../../components/ConverseAiSettings.vue';
@@ -29,6 +29,18 @@ const providerValues = () => Object.fromEntries(props.aiProviders.flatMap(({ id,
     [id + '_key', ''], ['remove_' + id + '_key', false], ['enable_' + id, enabled],
 ]));
 const providerKeys = useForm(providerValues());
+
+async function loadProviderKey(provider, action) {
+    const response = await http.getClient().request({
+        method: 'post',
+        url: `/settings/ai-providers/${provider}/key`,
+        data: JSON.stringify({ action }),
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    });
+    const { key } = JSON.parse(response.data);
+    if (typeof key !== 'string' || !key) throw new Error('Provider key unavailable');
+    return key;
+}
 
 function saveProviderKeys() {
     const current = providerValues();
@@ -108,9 +120,12 @@ watch(() => props.converse, (value) => converse.defaults({
                         <FormField v-slot="attrs" :label="page.props.labels.settings_ai_provider_key.replace(':provider', name)"
                             :error="providerKeys.errors[id + '_key']">
                             <SecretField v-bind="attrs" v-model="providerKeys[id + '_key']"
-                                :placeholder="page.props.labels[providerKeys['remove_' + id + '_key'] ? 'settings_ai_provider_key_pending_removal'
-                                    : configured ? 'settings_ai_provider_key_saved' : 'settings_ai_provider_key_empty']"
+                                :load-saved-value="configured && !providerKeys['remove_' + id + '_key'] ? (action) => loadProviderKey(id, action) : null"
+                                :placeholder="providerKeys['remove_' + id + '_key'] ? page.props.labels.settings_ai_provider_key_pending_removal
+                                    : configured ? '••••••••••••' : page.props.labels.settings_ai_provider_key_empty"
+                                :aria-describedby="[attrs['aria-describedby'], configured && attrs.id + '-saved'].filter(Boolean).join(' ') || undefined"
                                 :disabled="providerKeys.processing || providerKeys['remove_' + id + '_key']" />
+                            <span v-if="configured" :id="attrs.id + '-saved'" class="sr-only">{{ page.props.labels.settings_ai_provider_key_saved }}</span>
                         </FormField>
                         <label v-if="configured" class="flex items-center gap-2 text-xs">
                             <input v-model="providerKeys['remove_' + id + '_key']" type="checkbox" class="accent-brand"

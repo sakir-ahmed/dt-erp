@@ -253,6 +253,8 @@ return [
     'show_secret' => 'দেখান',
     'hide_secret' => 'লুকান',
     'copy_secret' => 'কপি',
+    'load_secret_failed' => 'সংরক্ষিত কী লোড করা যায়নি।',
+    'copy_secret_failed' => 'ক্লিপবোর্ডে কপি করা যায়নি।',
     'copied_secret' => 'ক্লিপবোর্ডে কপি হয়েছে',
     'contact_number' => 'হোয়াটসঅ্যাপ নম্বর',
     'copy_number' => 'নম্বর কপি',

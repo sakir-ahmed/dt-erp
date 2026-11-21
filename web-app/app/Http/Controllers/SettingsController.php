@@ -7,6 +7,7 @@ use App\Actions\ConverseAiSettings;
 use App\Actions\RecordConverseAudit;
 use App\Actions\WorkspaceSettings;
 use App\Enums\WorkspacePermission;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -86,6 +87,21 @@ class SettingsController extends Controller
         }
 
         return back();
+    }
+
+    public function readAiProviderKey(Request $request, AiProviderCredentials $credentials, RecordConverseAudit $audit, string $provider): JsonResponse
+    {
+        abort_if($request->user()->is_demo, 403);
+        $data = $request->validate(['action' => ['required', 'in:reveal,copy']]);
+        $key = $credentials->get()[$provider] ?? null;
+        abort_if($key === null, 404);
+
+        $audit($request->user()->id, 'settings.ai_provider_key_accessed', 'settings', 0, [
+            'provider' => $provider,
+            'operation' => $data['action'],
+        ]);
+
+        return response()->json(['key' => $key], headers: ['Cache-Control' => 'no-store, private']);
     }
 
     public function updateApplication(Request $request, WorkspaceSettings $settings, RecordConverseAudit $audit): RedirectResponse

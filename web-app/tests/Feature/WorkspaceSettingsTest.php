@@ -165,6 +165,33 @@ it('migrates an existing encrypted OpenAI key into common settings', function ()
     $this->assertDatabaseHas('cv_ai_settings', ['id' => 1, 'openai_key' => $stored]);
 });
 
+it('reveals or copies an individual saved key on demand for a real administrator', function () {
+    $credentials = app(AiProviderCredentials::class);
+    $credentials->put(['openrouter' => 'fixture-router-secret', 'openai' => 'fixture-unrelated-secret']);
+    $credentials->setEnabled(['openrouter' => false]);
+    $url = route('settings.ai-providers.key', 'openrouter');
+    $this->postJson($url, ['action' => 'reveal'])->assertUnauthorized();
+    $this->actingAs(User::factory()->create()->assignRole('staff'))
+        ->postJson($url, ['action' => 'copy'])->assertForbidden();
+    $this->actingAs(User::factory()->create(['is_demo' => true])->assignRole('administrator'))
+        ->postJson($url, ['action' => 'reveal'])->assertForbidden();
+
+    $admin = User::factory()->create()->assignRole('administrator');
+    $this->actingAs($admin)->get(route('settings.index'))->assertDontSee('fixture-router-secret');
+    $this->postJson($url, ['action' => 'unsupported'])->assertUnprocessable();
+    $this->postJson(route('settings.ai-providers.key', 'deepseek'), ['action' => 'copy'])->assertNotFound();
+    foreach (['reveal', 'copy'] as $action) {
+        $response = $this->postJson($url, ['action' => $action])
+            ->assertOk()->assertExactJson(['key' => 'fixture-router-secret']);
+        expect($response->headers->get('Cache-Control'))->toContain('no-store')->toContain('private');
+        $this->assertDatabaseHas('cv_audit_events', [
+            'user_id' => $admin->id, 'action' => 'settings.ai_provider_key_accessed',
+            'changes' => json_encode(['provider' => 'openrouter', 'operation' => $action], JSON_THROW_ON_ERROR),
+        ]);
+    }
+    $this->assertDatabaseCount('cv_audit_events', 2);
+});
+
 it('uses the stored default locale for fresh sessions', function () {
     app(WorkspaceSettings::class)->put('application', ['default_locale' => 'bn']);
 

@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\AiProviderCredentials;
 use App\Enums\WorkspacePermission;
 use App\Http\Controllers\ConverseAiConfigurationController;
 use App\Http\Controllers\ConverseChannelController;
@@ -136,6 +137,11 @@ Route::middleware('auth')->group(function () {
     Route::patch('/settings/ai-providers', [SettingsController::class, 'updateAiProviders'])
         ->can(WorkspacePermission::ManageSettings->value)
         ->name('settings.ai-providers.update');
+    Route::post('/settings/ai-providers/{provider}/key', [SettingsController::class, 'readAiProviderKey'])
+        ->whereIn('provider', array_keys(AiProviderCredentials::PROVIDERS))
+        ->can(WorkspacePermission::ManageSettings->value)
+        ->middleware('throttle:30,1')
+        ->name('settings.ai-providers.key');
     Route::prefix('settings/converse')->middleware('can:'.WorkspacePermission::ManageSettings->value)
         ->middleware('can:'.WorkspacePermission::ManageConverseChannels->value)->name('settings.converse.')->group(function () {
             Route::patch('/providers', [ConverseAiConfigurationController::class, 'saveProviders'])->name('providers');

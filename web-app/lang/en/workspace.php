@@ -254,6 +254,8 @@ return [
     'hide_secret' => 'Hide',
     'copy_secret' => 'Copy',
     'copied_secret' => 'Copied to clipboard',
+    'load_secret_failed' => 'Could not load the saved key.',
+    'copy_secret_failed' => 'Could not copy to the clipboard.',
     'contact_number' => 'WhatsApp number',
     'copy_number' => 'Copy number',
     'call_number' => 'Call',
