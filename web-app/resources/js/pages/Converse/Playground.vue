@@ -165,6 +165,21 @@ async function run() {
                         {{ page.props.labels[form.processing ? 'playground_running' : failed ? 'knowledge_chat_failed' : outcome ? 'playground_unavailable' : 'playground_result_empty'] }}
                     </p>
                 </div>
+                <section v-if="outcome?.attempts?.length" class="mt-4 border-t border-line pt-3" aria-labelledby="playground-attempts">
+                    <h3 id="playground-attempts" class="font-medium">{{ page.props.labels.workflow_steps }}</h3>
+                    <p v-if="outcome.attempts[0].workflow" class="my-2 text-sm text-muted">{{ outcome.attempts[0].workflow }}</p>
+                    <ol class="mt-2 grid gap-2">
+                        <li v-for="(attempt, index) in outcome.attempts" :key="index"
+                            class="grid gap-1 rounded-md border border-line bg-page p-2 text-xs">
+                            <span class="font-medium">{{ index + 1 }}. {{ cloudProviders[attempt.provider] || attempt.provider }} · {{ attempt.model }}</span>
+                            <span class="text-muted">
+                                {{ page.props.labels[attempt.reason ? 'workflow_skip_' + attempt.reason : 'workflow_attempt_' + attempt.status] }}
+                                <span v-if="attempt.agent"> · {{ attempt.agent }}</span>
+                                <span v-if="attempt.duration_ms !== undefined"> · {{ (attempt.duration_ms / 1000).toLocaleString(page.props.locale, { maximumFractionDigits: 2 }) }} {{ page.props.labels.playground_seconds }}</span>
+                            </span>
+                        </li>
+                    </ol>
+                </section>
             </section>
         </div>
     </AdminLayout>

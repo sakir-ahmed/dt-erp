@@ -13,6 +13,7 @@ return [
         ],
         'channels' => [],
         'rules' => [],
+        'workflows' => [],
         'cloud' => ['live' => false, 'models' => []],
         'embedding_model' => env('CONVERSE_EMBEDDING_MODEL'),
         'primary' => env('CONVERSE_AI_PRIMARY', 'ollama'),

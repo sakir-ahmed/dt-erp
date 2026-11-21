@@ -1,6 +1,7 @@
 <?php
 
 use App\Actions\AiProviderCredentials;
+use App\Actions\ConverseAiSettings;
 use App\Enums\WorkspaceRole;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
@@ -181,6 +182,59 @@ it('tests a local grounded reply with channel knowledge and returns named source
     Http::assertSentCount(1);
     $this->assertDatabaseCount('cv_messages', 0);
     $this->assertDatabaseCount('cv_ai_turns', 0);
+});
+
+it('saves ordered workflows and reports rejected, skipped and accepted attempts with their agents', function () {
+    $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'POS', 'enabled' => true]);
+    $channel = DB::table('cv_channel_accounts')->insertGetId(['name' => 'Fixture', 'external_id' => '572', 'type' => 'whatsapp', 'enabled' => true]);
+    $entry = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'title' => 'Kitchen display', 'kind' => 'faq', 'language' => 'en',
+        'body' => 'Check that the kitchen display is open for the right branch.', 'enabled' => true, 'public' => true,
+    ]);
+    config([
+        'converse.ai.agents.specialist' => ['name' => 'Specialist', 'instructions' => 'Follow the support guide.', 'collections' => [$collection]],
+        'converse.ai.agents.other' => ['name' => 'Other team', 'collections' => []],
+        'converse.ai.channels' => [$channel => ['collections' => [$collection]]],
+    ]);
+    $workflow = [
+        'name' => 'Complex WhatsApp support',
+        'when' => ['agent' => 'support', 'channel' => 'whatsapp', 'language' => 'en', 'intent' => 'support', 'complexity' => 'complex'],
+        'steps' => [
+            ['provider' => 'ollama', 'model' => 'first-model'],
+            ['provider' => 'openrouter', 'model' => 'vendor/model:free'],
+            ['provider' => 'ollama', 'model' => 'other-model', 'agent' => 'other'],
+            ['provider' => 'ollama', 'model' => 'specialist-model', 'agent' => 'specialist'],
+        ],
+    ];
+    $this->actingAs(User::factory()->create()->assignRole('staff'))
+        ->patch(route('settings.converse.workflows'), ['workflows' => [$workflow]])->assertForbidden();
+    $this->actingAs($admin)->patch(route('settings.converse.workflows'), ['workflows' => [$workflow]])->assertRedirect(route('settings.index'));
+    $this->get(route('settings.index'))->assertInertia(fn ($page) => $page
+        ->where('converseAi.providerSettings.workflows.0.steps.1.model', 'vendor/model:free'));
+
+    Http::fake(['http://127.0.0.1:11434/api/chat' => Http::sequence()
+        ->push(['done' => true, 'done_reason' => 'stop', 'message' => ['content' => '{"source_ids":[99999],"confidence":0.99}']])
+        ->push(['done' => true, 'done_reason' => 'stop', 'message' => ['content' => json_encode(['source_ids' => [$entry], 'confidence' => 0.99])]])]);
+
+    $this->postJson(route('converse.playground.run'), [
+        'mode' => 'knowledge', 'language' => 'en', 'message' => 'Can you help with a kitchen display error?', 'channel' => $channel,
+    ])->assertOk()
+        ->assertJsonPath('attempts.0.status', 'rejected')
+        ->assertJsonPath('attempts.1.reason', 'provider')
+        ->assertJsonPath('attempts.2.reason', 'agent')
+        ->assertJsonPath('attempts.3.agent', 'specialist')
+        ->assertJsonPath('attempts.3.status', 'accepted')
+        ->assertJsonPath('draft.model', 'specialist-model')
+        ->assertJsonPath('draft.fallback', true);
+    Http::assertSentCount(2);
+    Http::assertSent(fn (Request $request) => $request['model'] === 'specialist-model'
+        && str_contains($request['messages'][0]['content'], 'Follow the support guide.'));
+
+    $this->patch(route('settings.converse.routing'), [
+        'routing' => json_encode(['agents' => config('converse.ai.agents'), 'rules' => []]),
+    ])->assertRedirect();
+    expect(app(ConverseAiSettings::class)->public()['workflows'][0]['name'])->toBe('Complex WhatsApp support');
 });
 
 it('exposes the development runbook only to authorized channel administrators', function () {

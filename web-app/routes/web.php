@@ -140,6 +140,7 @@ Route::middleware('auth')->group(function () {
         ->middleware('can:'.WorkspacePermission::ManageConverseChannels->value)->name('settings.converse.')->group(function () {
             Route::patch('/providers', [ConverseAiConfigurationController::class, 'saveProviders'])->name('providers');
             Route::patch('/routing', [ConverseAiConfigurationController::class, 'saveRouting'])->name('routing');
+            Route::patch('/workflows', [ConverseAiConfigurationController::class, 'saveWorkflows'])->name('workflows');
             Route::patch('/channels/{channel}', [ConverseAiConfigurationController::class, 'saveChannel'])
                 ->whereNumber('channel')->name('channel');
         });

@@ -233,6 +233,37 @@ it('keeps credential-related questions on Ollama even with live cloud enabled', 
     Http::assertSentCount(2);
 });
 
+it('honors an explicit live provider and model while retaining cloud redaction', function () {
+    [$account, $collection] = aiChatFixture();
+    $entry = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'faq', 'title' => 'Kitchen display',
+        'body' => 'The kitchen display shows incoming POS tickets.', 'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    app(AiProviderCredentials::class)->put(['deepseek' => 'fixture-deepseek']);
+    config([
+        'converse.ai.cloud.live' => true,
+        'converse.ai.workflows' => [[
+            'name' => 'Sales product tour',
+            'when' => ['agent' => 'sales', 'intent' => 'inquiry'],
+            'steps' => [['provider' => 'deepseek', 'model' => 'fixture-sales-model'], ['provider' => 'ollama', 'model' => 'fixture']],
+        ]],
+    ]);
+    Http::fake([
+        'https://api.deepseek.com/chat/completions' => Http::response(['choices' => [[
+            'finish_reason' => 'stop', 'message' => ['content' => json_encode(['source_ids' => [$entry], 'confidence' => 0.97])],
+        ]]]),
+        'https://graph.facebook.com/*' => Http::response(['message_id' => 'accepted']),
+    ]);
+
+    dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'custom-route', 'Tell me about the kitchen display. My email is guest@example.com.')));
+
+    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'send', 'provider' => 'deepseek', 'model' => 'fixture-sales-model']);
+    Http::assertSentCount(2);
+    Http::assertSent(fn (Request $request) => $request->url() === 'https://api.deepseek.com/chat/completions'
+        && str_contains($request['messages'][1]['content'], 'kitchen display')
+        && ! str_contains($request['messages'][1]['content'], 'guest@example.com'));
+});
+
 it('checks human takeover again after model generation', function () {
     [$account, $collection] = aiChatFixture();
     $entry = DB::table('cv_knowledge_entries')->insertGetId([

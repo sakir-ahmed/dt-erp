@@ -10,6 +10,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 class ConverseAiConfigurationController extends Controller
@@ -102,12 +103,64 @@ class ConverseAiConfigurationController extends Controller
             $table = DB::table('cv_ai_settings')->where('id', 1);
             $saved = $table->lockForUpdate()->firstOrFail();
             $routing = json_decode($saved->routing ?? '{}', true, flags: JSON_THROW_ON_ERROR);
-            $data += array_intersect_key($routing, ['cloud' => true]);
+            $data += array_intersect_key($routing, ['cloud' => true, 'workflows' => true]);
             $table->update(['routing' => json_encode($data, JSON_THROW_ON_ERROR)]);
             $audit($request->user()->id, 'ai.routing_saved', 'ai_settings', 1, [
                 'agent_keys' => array_keys($data['agents']), 'rule_count' => count($data['rules']),
                 'cloud' => $data['cloud'] ?? null,
             ]);
+        });
+
+        return $this->saved($request);
+    }
+
+    public function saveWorkflows(Request $request, RecordConverseAudit $audit, ConverseAiSettings $configuration): RedirectResponse
+    {
+        abort_if($request->user()->is_demo, 403);
+        $data = $request->validate([
+            'workflows' => ['present', 'array', 'list', 'max:8'],
+            'workflows.*' => ['required', 'array:name,when,steps'],
+            'workflows.*.name' => ['required', 'string', 'max:80', 'distinct:ignore_case'],
+            'workflows.*.when' => ['present', 'array:agent,channel,language,intent,complexity'],
+            'workflows.*.when.agent' => ['nullable', 'string', 'max:40'],
+            'workflows.*.when.channel' => ['nullable', Rule::in(['messenger', 'whatsapp'])],
+            'workflows.*.when.language' => ['nullable', Rule::in(['bn', 'en', 'banglish'])],
+            'workflows.*.when.intent' => ['nullable', Rule::in(['inquiry', 'price', 'offer', 'support', 'sales_request'])],
+            'workflows.*.when.complexity' => ['nullable', Rule::in(['standard', 'complex'])],
+            'workflows.*.steps' => ['required', 'array', 'list', 'max:5'],
+            'workflows.*.steps.*' => ['required', 'array:provider,model,agent'],
+            'workflows.*.steps.*.provider' => ['required', Rule::in(['ollama', ...array_keys(AiProviderCredentials::PROVIDERS)])],
+            'workflows.*.steps.*.model' => ['required', 'string', 'max:150', 'regex:~^[A-Za-z0-9][A-Za-z0-9_.:/-]*$~D'],
+            'workflows.*.steps.*.agent' => ['nullable', 'string', 'max:40'],
+        ]);
+
+        DB::transaction(function () use ($request, $audit, $configuration, $data): void {
+            $table = DB::table('cv_ai_settings')->where('id', 1);
+            $saved = $table->lockForUpdate()->firstOrFail();
+            $agents = $configuration->get($saved)['agents'];
+            $workflows = $data['workflows'];
+            foreach ($workflows as $index => &$workflow) {
+                $workflow['when'] = array_filter($workflow['when'], fn (?string $value): bool => $value !== null);
+                $entryAgent = $workflow['when']['agent'] ?? null;
+                if ($entryAgent !== null && ! isset($agents[$entryAgent])) {
+                    throw ValidationException::withMessages(["workflows.{$index}.when.agent" => __('workspace.workflow_invalid_agent')]);
+                }
+                foreach ($workflow['steps'] as $stepIndex => $step) {
+                    $prefix = "workflows.{$index}.steps.{$stepIndex}";
+                    if (isset($step['agent']) && ! isset($agents[$step['agent']])) {
+                        throw ValidationException::withMessages(["{$prefix}.agent" => __('workspace.workflow_invalid_agent')]);
+                    }
+                    if ($step['provider'] === 'ollama' && (str_contains(strtolower($step['model']), 'cloud')
+                        || ! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $step['model']))) {
+                        throw ValidationException::withMessages(["{$prefix}.model" => __('workspace.workflow_invalid_local')]);
+                    }
+                }
+            }
+            unset($workflow);
+            $routing = json_decode($saved->routing ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+            $routing['workflows'] = $workflows;
+            $table->update(['routing' => json_encode($routing, JSON_THROW_ON_ERROR)]);
+            $audit($request->user()->id, 'ai.workflows_saved', 'ai_settings', 1, ['workflows' => $workflows]);
         });
 
         return $this->saved($request);

@@ -21,8 +21,8 @@ class RouteConverseDraft
 
     public function __construct(private ConverseAiSettings $configuration) {}
 
-    /** @return array{text: string, provider: string, model: string, fallback: bool}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null): ?array
+    /** @return array{text: string, provider: string, model: string, fallback: bool, workflow?: string, workflow_agent?: string}|null */
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null, array $workflowContext = [], ?callable $recordAttempt = null): ?array
     {
         $settings = $this->configuration->get();
         $local = array_values(array_unique(array_filter([
@@ -35,41 +35,94 @@ class RouteConverseDraft
         $local = $settings['ollama_enabled'] && ! $cloudOnly
             ? array_map(fn (string $model): array => ['ollama', $model, null], array_slice($local, 0, 2)) : [];
         $candidates = $cloudFirst ? [...$cloud, ...$local] : [...$local, ...$cloud];
-        $budget = $localBudget ?? 36;
-        $localDeadline = null;
-        $cloudDeadline = null;
-        $cloudRemaining = count($cloud);
-        foreach ($candidates as $index => [$provider, $model, $key]) {
-            if ($provider === 'ollama') {
-                $localDeadline ??= hrtime(true) + $budget * 1_000_000_000;
-                $reserve = count($local) > 1 && $model === $local[0][1] ? max(0, $budget - 20) : 0;
-                $timeout = ($localDeadline - hrtime(true)) / 1_000_000_000 - $reserve;
-            } else {
-                $cloudDeadline ??= hrtime(true) + 21 * 1_000_000_000;
-                $timeout = min($cloudRemaining > 1 ? 7 : 11, ($cloudDeadline - hrtime(true)) / 1_000_000_000);
-                $cloudRemaining--;
-            }
-            if ($timeout < 1) {
+        $workflow = $workflowContext === [] ? null : collect($settings['workflows'])->first(
+            fn (array $rule): bool => array_all($rule['when'], fn (string $value, string $field): bool => $value
+                === ($field === 'complexity' ? ($complex ? 'complex' : 'standard') : ($workflowContext[$field] ?? null))),
+        );
+        if ($workflow !== null) {
+            $candidates = $this->workflowCandidates($workflow['steps'], $settings, $workflowContext, $localOnly, $cloudOnly, $cloudProvider);
+        }
+
+        $eligible = array_filter($candidates, fn (array $candidate): bool => ! isset($candidate[4]));
+        $localCount = count(array_filter($eligible, fn (array $candidate): bool => $candidate[0] === 'ollama'));
+        $remaining = ['local' => $localCount, 'cloud' => count($eligible) - $localCount];
+        $budget = ['local' => (float) ($localBudget ?? 36), 'cloud' => 21.0];
+        foreach ($candidates as $index => $candidate) {
+            [$provider, $model, $key] = $candidate;
+            $agentId = $candidate[3] ?? $workflowContext['agent'] ?? null;
+            $attempt = ['provider' => $provider, 'model' => $model, 'agent' => $agentId, 'workflow' => $workflow['name'] ?? null];
+            if (isset($candidate[4])) {
+                if ($recordAttempt !== null) {
+                    $recordAttempt([...$attempt, 'status' => 'skipped', 'reason' => $candidate[4]]);
+                }
+
                 continue;
             }
+            $group = $provider === 'ollama' ? 'local' : 'cloud';
+            $left = $remaining[$group]--;
+            $timeout = match ($group) {
+                'local' => $left > 1 ? min(20, $budget[$group] / $left) : $budget[$group],
+                default => min($left > 1 ? 7 : 11, $budget[$group] / $left),
+            };
+            if ($timeout < 1) {
+                if ($recordAttempt !== null) {
+                    $recordAttempt([...$attempt, 'status' => 'skipped']);
+                }
+
+                continue;
+            }
+            $agentInstructions = $agentId === null ? null : ($settings['agents'][$agentId]['instructions'] ?? null);
+            $prompt = $instructions;
+            if (filled($agentInstructions)) {
+                $prompt .= "\nAgent guidance: ".mb_substr($agentInstructions, 0, 450);
+            }
+            $started = hrtime(true);
             try {
                 $externalInput = $cloudInput ?? $input;
                 $text = match ($provider) {
-                    'ollama' => $this->ollama($model, $instructions, $input, (int) $settings['ollama_port'], $accept !== null, $timeout),
-                    'openai' => $this->openAi($model, $instructions, $externalInput, $key, $timeout),
-                    'anthropic' => $this->anthropic($model, $instructions, $externalInput, $key, $timeout),
-                    default => $this->chatCompletions($provider, $model, $instructions, $externalInput, $key, $accept !== null, $timeout),
+                    'ollama' => $this->ollama($model, $prompt, $input, (int) $settings['ollama_port'], $accept !== null, $timeout),
+                    'openai' => $this->openAi($model, $prompt, $externalInput, $key, $timeout),
+                    'anthropic' => $this->anthropic($model, $prompt, $externalInput, $key, $timeout),
+                    default => $this->chatCompletions($provider, $model, $prompt, $externalInput, $key, $accept !== null, $timeout),
                 };
             } catch (ConnectionException) {
-                continue;
+                $text = null;
+            }
+            $elapsed = (hrtime(true) - $started) / 1_000_000_000;
+            $budget[$group] -= $elapsed;
+            $accepted = $text !== null && ($accept === null || $accept($text));
+            if ($recordAttempt !== null) {
+                $recordAttempt([...$attempt, 'status' => $accepted ? 'accepted' : ($text === null ? 'unavailable' : 'rejected'),
+                    'duration_ms' => (int) ($elapsed * 1000)]);
             }
 
-            if ($text !== null && ($accept === null || $accept($text))) {
-                return ['text' => $text, 'provider' => $provider, 'model' => $model, 'fallback' => $index > 0];
+            if ($accepted) {
+                return ['text' => $text, 'provider' => $provider, 'model' => $model, 'fallback' => $index > 0,
+                    ...($workflow === null ? [] : ['workflow' => $workflow['name'], 'workflow_agent' => $agentId])];
             }
         }
 
         return null;
+    }
+
+    private function workflowCandidates(array $steps, array $settings, array $context, bool $localOnly, bool $cloudOnly, ?string $cloudProvider): array
+    {
+        $candidates = [];
+        foreach ($steps as $step) {
+            $provider = $step['provider'];
+            $key = $settings['cloud_keys'][$provider] ?? null;
+            $available = $provider === 'ollama' ? (! $cloudOnly && $settings['ollama_enabled'])
+                : (! $localOnly && $settings['allow_cloud'] && filled($key) && ($cloudProvider === null || $cloudProvider === $provider));
+            $agentId = $step['agent'] ?? $context['agent'] ?? null;
+            $agent = $agentId === null ? null : ($settings['agents'][$agentId] ?? null);
+            $collections = $context['collection_ids'] ?? [];
+            $agentAllowed = $agentId === null || ($agent !== null && ($agent['enabled'] ?? true) === true
+                && array_diff($collections, $agent['collections'] ?? $collections) === []);
+            $reason = ! $available ? 'provider' : ($agentAllowed ? null : 'agent');
+            $candidates[] = [$provider, $step['model'], $key, $agentId, $reason];
+        }
+
+        return $candidates;
     }
 
     private function cloudCandidates(array $settings, bool $complex, ?string $cloudProvider): array

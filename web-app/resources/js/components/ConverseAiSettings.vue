@@ -1,6 +1,7 @@
 <script setup>
 import { Link, useForm, usePage } from '@inertiajs/vue3';
 import { computed } from 'vue';
+import ConverseWorkflowEditor from './ConverseWorkflowEditor.vue';
 import FormField from './ui-kit/FormField.vue';
 
 const props = defineProps({
@@ -66,6 +67,7 @@ function saveProviders() {
             <h2 id="converse-ai-title" class="font-semibold">{{ page.props.labels.settings_converse_ai }}</h2>
             <Link href="/converse/playground" class="text-xs text-brand underline">{{ page.props.labels.playground }}</Link>
         </div>
+        <ConverseWorkflowEditor :settings="providerSettings" />
         <div class="grid gap-3 xl:grid-cols-2">
             <section class="rounded-lg border border-line bg-surface p-4" aria-labelledby="providers-title">
                 <h2 id="providers-title" class="mb-3 font-semibold">{{ page.props.labels.ai_providers }}</h2>

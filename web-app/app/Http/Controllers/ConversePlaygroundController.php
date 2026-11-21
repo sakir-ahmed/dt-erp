@@ -119,6 +119,7 @@ class ConversePlaygroundController extends Controller
             'banglish' => 'Banglish (Bangla written in Latin script)',
             default => 'English',
         };
+        $attempts = [];
         $result = $draft(
             "This is an isolated routing test. Write a single sample acknowledgement in {$language}. Do not promise any action, name a product, or claim a handoff actually happened.",
             self::SAMPLES[$data['language']],
@@ -126,9 +127,12 @@ class ConversePlaygroundController extends Controller
             complex: $data['complex'] ?? false,
             cloudOnly: ! $demo && $providerMode === 'cloud',
             cloudProvider: $demo ? null : ($data['cloud_provider'] ?? null),
+            recordAttempt: function (array $attempt) use (&$attempts): void {
+                $attempts[] = $attempt;
+            },
         );
 
-        return response()->json(['draft' => $result, 'duration_ms' => $this->duration($started)]);
+        return response()->json(['draft' => $result, 'attempts' => $attempts, 'duration_ms' => $this->duration($started)]);
     }
 
     private function knowledgeResult(array $turn, int $started): JsonResponse
@@ -142,6 +146,7 @@ class ConversePlaygroundController extends Controller
                 'sources' => DB::table('cv_knowledge_entries')->whereIn('id', $turn['source_ids'])->get(['id', 'title']),
                 'attachment' => $turn['asset_title'] ?? null,
             ],
+            'attempts' => $turn['attempts'] ?? [],
             'duration_ms' => $this->duration($started),
         ]);
     }
