@@ -22,7 +22,7 @@ class RetrieveConverseKnowledge
         $model = $semanticQuery !== null ? $this->configuration->get()['embedding_model'] : null;
         $vector = is_string($model) && trim($semanticQuery ?? '') !== ''
             ? (($this->embed)([mb_substr($semanticQuery, 0, 1200)], $model)[0] ?? null) : null;
-        $keywords = $vector === null ? $this->searchWords($semanticQuery ?? '') : [];
+        $keywords = $this->searchWords($semanticQuery ?? '');
 
         $candidates = DB::table('cv_knowledge_entries as entry')
             ->join('cv_knowledge_collections as collection', 'collection.id', '=', 'entry.collection_id')
@@ -49,25 +49,28 @@ class RetrieveConverseKnowledge
                 ...($vector !== null ? ['entry.embedding'] : [])]);
 
         if ($vector !== null) {
-            $candidates = $candidates->sortByDesc(function (object $entry) use ($model, $vector, $semanticQuery): float {
+            $candidates = $candidates->sortByDesc(function (object $entry) use ($model, $vector, $keywords): float {
+                $textRank = $this->textRank($entry, $keywords);
                 if ($entry->embedding_model === $model && $entry->embedding !== null) {
-                    return $this->embed->similarity($vector, json_decode($entry->embedding, true, flags: JSON_THROW_ON_ERROR));
+                    return $this->embed->similarity($vector, json_decode($entry->embedding, true, flags: JSON_THROW_ON_ERROR))
+                        + min(0.25, 0.025 * $textRank);
                 }
 
-                return mb_stripos($semanticQuery, $entry->subject_title ?? $entry->title) !== false ? 1.0 : 0.0;
+                return min(0.65, 0.05 * $textRank);
             });
         } elseif ($keywords !== []) {
-            $candidates = $candidates->sortByDesc(function (object $entry) use ($keywords): int {
-                $title = $this->searchWords($entry->title);
-                $body = $this->searchWords($entry->body ?? '');
-
-                return count(array_intersect($keywords, $title)) * 2 + count(array_intersect($keywords, $body));
-            });
+            $candidates = $candidates->sortByDesc(fn (object $entry): int => $this->textRank($entry, $keywords));
         }
 
         return $candidates->take($limit)->values()->each(function (object $entry): void {
             unset($entry->embedding);
         });
+    }
+
+    private function textRank(object $entry, array $keywords): int
+    {
+        return 2 * count(array_intersect($keywords, $this->searchWords($entry->title)))
+            + count(array_intersect($keywords, $this->searchWords($entry->body ?? '')));
     }
 
     /** @return list<string> */

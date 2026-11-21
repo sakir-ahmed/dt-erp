@@ -104,6 +104,24 @@ it('indexes and searches knowledge as text while Ollama is disabled', function (
     Http::assertNothingSent();
 });
 
+it('ranks a relevant FAQ above an unindexed product overview for a specific question', function () {
+    Http::fake(['http://127.0.0.1:11434/api/embed' => Http::response(['embeddings' => [[1, 0]]])]);
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture', 'enabled' => true]);
+    $product = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'product', 'title' => 'Fixture POS', 'body' => 'Counter billing and restaurant management.',
+        'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    $faq = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'faq', 'title' => 'Close a cashier shift', 'body' => 'Count the drawer and compare the expected cash.',
+        'language' => 'en', 'enabled' => true, 'public' => true, 'subject_id' => $product,
+        'embedding_model' => 'fixture-embed', 'embedding' => json_encode([0.8, 0.6]),
+    ]);
+
+    $result = app(RetrieveConverseKnowledge::class)([$collection], '', semanticQuery: 'How do I close the cashier shift in Fixture POS?');
+
+    expect($result->first()->id)->toBe($faq);
+});
+
 it('indexes supported text and Office files and enforces publication, expiry and collection isolation', function (string $format) {
     if ($format === 'pdf' && (new ExecutableFinder)->find('pdftotext') === null) {
         $this->markTestSkipped('Poppler pdftotext is required to extract PDF fixtures.');
