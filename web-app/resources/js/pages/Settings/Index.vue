@@ -2,6 +2,7 @@
 import { Head, useForm, usePage } from '@inertiajs/vue3';
 import { watch } from 'vue';
 import FormField from '../../components/ui-kit/FormField.vue';
+import ConverseAiSettings from '../../components/ConverseAiSettings.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SecretField from '../../components/ui-kit/SecretField.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
@@ -13,6 +14,7 @@ const props = defineProps({
     modes: { type: Array, required: true },
     channelTypes: { type: Array, required: true },
     aiProviders: { type: Array, required: true },
+    converseAi: { type: Object, default: null },
 });
 
 const page = usePage();
@@ -23,14 +25,21 @@ const converse = useForm({
     new_conversation_mode: props.converse.new_conversation_mode,
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(props.converse.channel_types?.[type])])),
 });
-const providerKeys = useForm(Object.fromEntries(
-    props.aiProviders.flatMap(({ id }) => [[id + '_key', ''], ['remove_' + id + '_key', false]]),
-));
+const providerValues = () => Object.fromEntries(props.aiProviders.flatMap(({ id, enabled }) => [
+    [id + '_key', ''], ['remove_' + id + '_key', false], ['enable_' + id, enabled],
+]));
+const providerKeys = useForm(providerValues());
 
 function saveProviderKeys() {
-    providerKeys.patch('/settings/ai-providers', {
+    const current = providerValues();
+    providerKeys.transform((values) => Object.fromEntries(
+        Object.entries(values).filter(([field, value]) => value !== current[field]),
+    )).patch('/settings/ai-providers', {
         preserveScroll: true,
-        onSuccess: () => providerKeys.reset(),
+        onSuccess: () => {
+            providerKeys.defaults(providerValues());
+            providerKeys.reset();
+        },
     });
 }
 
@@ -89,8 +98,13 @@ watch(() => props.converse, (value) => converse.defaults({
                 class="grid scroll-mt-20 gap-3 rounded-lg border border-line bg-surface p-3 lg:col-span-2"
                 @submit.prevent="saveProviderKeys">
                 <h2 class="font-semibold">{{ page.props.labels.settings_ai_provider_keys }}</h2>
+                <p class="text-xs text-muted">{{ page.props.labels.settings_ai_provider_key_help }}</p>
                 <div class="grid gap-4 sm:grid-cols-2">
-                    <div v-for="{ id, name, configured } in aiProviders" :key="id" class="grid content-start gap-2">
+                    <div v-for="{ id, name, configured } in aiProviders" :key="id" class="grid content-start gap-2 rounded-md border border-line p-3">
+                        <label class="flex items-center gap-2 text-sm font-medium">
+                            <input v-model="providerKeys['enable_' + id]" type="checkbox" class="accent-brand" :disabled="providerKeys.processing">
+                            {{ page.props.labels.settings_ai_provider_enabled.replace(':provider', name) }}
+                        </label>
                         <FormField v-slot="attrs" :label="page.props.labels.settings_ai_provider_key.replace(':provider', name)"
                             :error="providerKeys.errors[id + '_key']">
                             <SecretField v-bind="attrs" v-model="providerKeys[id + '_key']"
@@ -110,6 +124,7 @@ watch(() => props.converse, (value) => converse.defaults({
                     {{ page.props.labels.settings_ai_provider_keys_save }}
                 </button>
             </form>
+            <ConverseAiSettings v-if="converseAi" v-bind="converseAi" :auto-reply="Boolean(converse.auto_reply)" />
         </div>
     </AdminLayout>
 </template>

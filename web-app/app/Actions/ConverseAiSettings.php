@@ -25,7 +25,9 @@ class ConverseAiSettings
             $settings['channels'] = array_replace($settings['channels'], json_decode($saved->channels, true, flags: JSON_THROW_ON_ERROR));
         }
 
-        return [...$settings, 'cloud_keys' => $this->credentials->get()];
+        return [...$settings, 'cloud_keys' => array_intersect_key(
+            $this->credentials->get(), array_filter($this->credentials->enabled()),
+        )];
     }
 
     public function channel(int $id): array

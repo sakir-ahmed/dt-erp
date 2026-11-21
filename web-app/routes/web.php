@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\WorkspacePermission;
+use App\Http\Controllers\ConverseAiConfigurationController;
 use App\Http\Controllers\ConverseChannelController;
 use App\Http\Controllers\ConverseInboxController;
 use App\Http\Controllers\ConverseKnowledgeController;
@@ -90,9 +91,9 @@ Route::middleware('auth')->group(function () {
         Route::get('/converse/development', [ConversePlaygroundController::class, 'development'])->name('converse.development');
         Route::get('/converse/playground', [ConversePlaygroundController::class, 'index'])->name('converse.playground.index');
         Route::post('/converse/playground', [ConversePlaygroundController::class, 'run'])->middleware('throttle:10,1')->name('converse.playground.run');
-        Route::patch('/converse/playground/routing', [ConversePlaygroundController::class, 'saveRouting'])->name('converse.playground.routing');
-        Route::patch('/converse/playground/providers', [ConversePlaygroundController::class, 'saveProviders'])->name('converse.playground.providers');
-        Route::patch('/converse/playground/channels/{channel}', [ConversePlaygroundController::class, 'saveChannel'])
+        Route::patch('/converse/playground/routing', [ConverseAiConfigurationController::class, 'saveRouting'])->name('converse.playground.routing');
+        Route::patch('/converse/playground/providers', [ConverseAiConfigurationController::class, 'saveProviders'])->name('converse.playground.providers');
+        Route::patch('/converse/playground/channels/{channel}', [ConverseAiConfigurationController::class, 'saveChannel'])
             ->whereNumber('channel')->name('converse.playground.channel');
         Route::get('/converse/channels', [ConverseChannelController::class, 'index'])->name('converse.channels.index');
         Route::post('/converse/channels', [ConverseChannelController::class, 'store'])->name('converse.channels.store');
@@ -135,6 +136,13 @@ Route::middleware('auth')->group(function () {
     Route::patch('/settings/ai-providers', [SettingsController::class, 'updateAiProviders'])
         ->can(WorkspacePermission::ManageSettings->value)
         ->name('settings.ai-providers.update');
+    Route::prefix('settings/converse')->middleware('can:'.WorkspacePermission::ManageSettings->value)
+        ->middleware('can:'.WorkspacePermission::ManageConverseChannels->value)->name('settings.converse.')->group(function () {
+            Route::patch('/providers', [ConverseAiConfigurationController::class, 'saveProviders'])->name('providers');
+            Route::patch('/routing', [ConverseAiConfigurationController::class, 'saveRouting'])->name('routing');
+            Route::patch('/channels/{channel}', [ConverseAiConfigurationController::class, 'saveChannel'])
+                ->whereNumber('channel')->name('channel');
+        });
 
     Route::post('/logout', [SessionController::class, 'destroy'])->name('logout');
 });

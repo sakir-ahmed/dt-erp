@@ -22,7 +22,7 @@ class RouteConverseDraft
     public function __construct(private ConverseAiSettings $configuration) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false): ?array
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null): ?array
     {
         $settings = $this->configuration->get();
         $local = array_values(array_unique(array_filter([
@@ -30,9 +30,9 @@ class RouteConverseDraft
             $localFallback ?? $settings['ollama_fallback_model'],
             $settings['ollama_fallback_model'],
         ], fn (?string $model): bool => filled($model))));
-        $cloud = $localOnly || $settings['allow_cloud'] !== true ? [] : $this->cloudCandidates($settings, $complex);
+        $cloud = $localOnly || $settings['allow_cloud'] !== true ? [] : $this->cloudCandidates($settings, $complex, $cloudProvider);
         $cloudFirst = $cloudInput === null && ($preferred ?? $settings['primary']) === 'openai';
-        $local = $settings['ollama_enabled']
+        $local = $settings['ollama_enabled'] && ! $cloudOnly
             ? array_map(fn (string $model): array => ['ollama', $model, null], array_slice($local, 0, 2)) : [];
         $candidates = $cloudFirst ? [...$cloud, ...$local] : [...$local, ...$cloud];
         $budget = $localBudget ?? 36;
@@ -72,7 +72,7 @@ class RouteConverseDraft
         return null;
     }
 
-    private function cloudCandidates(array $settings, bool $complex): array
+    private function cloudCandidates(array $settings, bool $complex, ?string $cloudProvider): array
     {
         $keys = $settings['cloud_keys'];
         $models = $settings['cloud']['models'];
@@ -85,7 +85,8 @@ class RouteConverseDraft
             foreach ($models as $candidate) {
                 $provider = $candidate['provider'];
                 $model = $candidate['model'];
-                if ($candidate['tier'] === $tier && filled($model) && filled($keys[$provider] ?? null)) {
+                if (($cloudProvider === null || $cloudProvider === $provider) && $candidate['tier'] === $tier
+                    && filled($model) && filled($keys[$provider] ?? null)) {
                     $tierCandidates["{$provider}/{$model}"] = [$provider, $model, $keys[$provider]];
                 }
             }

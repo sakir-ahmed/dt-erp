@@ -77,8 +77,9 @@ it('can disable and re-enable the local provider without disabling configured cl
     $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
     $form = ['primary' => 'ollama', 'allow_cloud' => true, 'ollama_port' => 11434,
         'ollama_model' => 'fixture:local', 'remove_openai_key' => false];
-    $this->actingAs($admin)->patch(route('converse.playground.providers'), [...$form, 'ollama_enabled' => false])->assertRedirect();
-    $this->get(route('converse.playground.index'))->assertInertia(fn ($page) => $page->where('providerSettings.ollama_enabled', false));
+    $this->actingAs($admin)->patch(route('settings.converse.providers'), [...$form, 'ollama_enabled' => false])->assertRedirect(route('settings.index'));
+    $this->get(route('settings.index'))->assertInertia(fn ($page) => $page->where('converseAi.providerSettings.ollama_enabled', false));
+    $this->get(route('converse.playground.index'))->assertInertia(fn ($page) => $page->where('ollamaAvailable', false)->missing('providerSettings'));
     Http::fake([
         'https://api.openai.com/v1/responses' => Http::response([
             'status' => 'completed',
@@ -121,9 +122,65 @@ it('allows only a non-demo admin to save encrypted provider settings and never r
 
     $this->patch($url, [...$settings, 'openai_key' => '', 'remove_openai_key' => true])->assertRedirect();
     $this->assertDatabaseHas('settings', ['section' => 'ai_provider_credentials', 'key' => 'openai', 'value' => 'null']);
-    $this->get(route('converse.playground.index'))->assertInertia(
-        fn ($page) => $page->where('providerSettings.has_openai_key', false)->missing('providerSettings.openai_key'),
+    $this->get(route('settings.index'))->assertInertia(
+        fn ($page) => $page->where('converseAi.providerSettings.has_openai_key', false)->missing('converseAi.providerSettings.openai_key'),
     );
+});
+
+it('tests a selected cloud provider with a synthetic sample and skips a disabled provider', function () {
+    $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
+    app(AiProviderCredentials::class)->put(['openrouter' => 'fixture-router']);
+    config(['converse.ai.cloud.models' => [
+        ['provider' => 'openrouter', 'model' => 'fixture/free:free', 'tier' => 'free'],
+        ['provider' => 'openai', 'model' => 'fixture-model', 'tier' => 'economy'],
+    ]]);
+    Http::fake(['https://openrouter.ai/api/v1/chat/completions' => Http::response([
+        'choices' => [['finish_reason' => 'stop', 'message' => ['content' => 'Happy to help.']]],
+    ])]);
+
+    $url = route('converse.playground.run');
+    $payload = ['language' => 'en', 'provider_mode' => 'cloud', 'cloud_provider' => 'openrouter', 'message' => 'Private sample'];
+    $this->actingAs($admin)->postJson($url, $payload)->assertOk()
+        ->assertJsonPath('draft.provider', 'openrouter')->assertJsonStructure(['duration_ms']);
+    Http::assertSent(fn (Request $request) => $request['messages'][1]['content'] === 'Hello, could I speak to a team member?');
+
+    $this->patch(route('settings.ai-providers.update'), ['enable_openrouter' => false])->assertRedirect();
+    $this->postJson($url, $payload)->assertOk()->assertJsonPath('draft', null);
+    expect(app(AiProviderCredentials::class)->get()['openrouter'])->toBe('fixture-router');
+    $this->get(route('settings.index'))->assertInertia(fn ($page) => $page
+        ->where('aiProviders.0.configured', true)->where('aiProviders.0.enabled', false));
+    Http::assertSentCount(1);
+});
+
+it('tests a local grounded reply with channel knowledge and returns named sources', function () {
+    $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
+    $demo = User::factory()->create(['is_demo' => true])->assignRole(WorkspaceRole::Administrator->value);
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture Knowledge', 'enabled' => true]);
+    $outside = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Outside scope', 'enabled' => true]);
+    $channel = DB::table('cv_channel_accounts')->insertGetId(['name' => 'Fixture', 'external_id' => '571', 'type' => 'whatsapp', 'enabled' => true]);
+    $entry = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'title' => 'End a cashier shift', 'kind' => 'faq', 'language' => 'en',
+        'body' => 'Count the drawer and compare it with the expected cash.', 'enabled' => true, 'public' => true,
+    ]);
+    config(['converse.ai.channels' => [$channel => ['collections' => [$collection]]], 'converse.ai.cloud.live' => true]);
+    Http::fake([
+        'http://127.0.0.1:11434/api/chat' => Http::response([
+            'done' => true, 'done_reason' => 'stop',
+            'message' => ['content' => json_encode(['source_ids' => [$entry], 'confidence' => 0.99])],
+        ]),
+    ]);
+    $url = route('converse.playground.run');
+    $payload = ['mode' => 'knowledge', 'language' => 'en', 'message' => 'How do I end a cashier shift?', 'channel' => $channel, 'collection' => $collection,
+        'provider_mode' => 'cloud'];
+
+    $this->actingAs($demo)->postJson($url, $payload)->assertForbidden();
+    $this->actingAs($admin)->postJson($url, [...$payload, 'collection' => $outside])->assertUnprocessable()->assertJsonValidationErrors('collection');
+    $this->postJson($url, $payload)->assertOk()
+        ->assertJsonPath('draft.decision', 'send')->assertJsonPath('draft.scope.label', 'Fixture Knowledge')
+        ->assertJsonPath('draft.sources.0.title', 'End a cashier shift')->assertJsonPath('draft.provider', 'ollama');
+    Http::assertSentCount(1);
+    $this->assertDatabaseCount('cv_messages', 0);
+    $this->assertDatabaseCount('cv_ai_turns', 0);
 });
 
 it('exposes the development runbook only to authorized channel administrators', function () {

@@ -3,8 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Actions\AiProviderCredentials;
+use App\Actions\ConverseAiSettings;
 use App\Actions\RecordConverseAudit;
 use App\Actions\WorkspaceSettings;
+use App\Enums\WorkspacePermission;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,15 +21,17 @@ class SettingsController extends Controller
 
     private const array CHANNEL_TYPES = ['messenger', 'whatsapp'];
 
-    public function index(Request $request, WorkspaceSettings $settings, AiProviderCredentials $credentials): Response
+    public function index(Request $request, WorkspaceSettings $settings, AiProviderCredentials $credentials, ConverseAiSettings $configuration): Response
     {
         $aiProviders = [];
         if (! $request->user()->is_demo) {
             $configured = $credentials->get();
+            $enabled = $credentials->enabled();
             foreach (AiProviderCredentials::PROVIDERS as $id => $name) {
-                $aiProviders[] = ['id' => $id, 'name' => $name, 'configured' => isset($configured[$id])];
+                $aiProviders[] = ['id' => $id, 'name' => $name, 'configured' => isset($configured[$id]), 'enabled' => $enabled[$id]];
             }
         }
+        $canConfigure = ! $request->user()->is_demo && $request->user()->can(WorkspacePermission::ManageConverseChannels->value);
 
         return Inertia::render('Settings/Index', [
             'application' => $settings->application(),
@@ -36,6 +40,14 @@ class SettingsController extends Controller
             'modes' => self::MODES,
             'channelTypes' => self::CHANNEL_TYPES,
             'aiProviders' => $aiProviders,
+            'converseAi' => $canConfigure ? [
+                'providerSettings' => $configuration->public(),
+                'channels' => DB::table('cv_channel_accounts')->where('is_demo', false)->orderBy('name')
+                    ->select('id', 'name', 'type', 'enabled')->selectRaw('CASE WHEN send_token IS NULL THEN 0 ELSE 1 END as has_send_token')->get(),
+                'collections' => DB::table('cv_knowledge_collections')->where('is_demo', false)
+                    ->where('enabled', true)->orderBy('name')->get(['id', 'name']),
+                'outboundEnabled' => config('converse.outbound_enabled') === true,
+            ] : null,
         ]);
     }
 
@@ -46,22 +58,29 @@ class SettingsController extends Controller
         foreach (array_keys(AiProviderCredentials::PROVIDERS) as $provider) {
             $rules[$provider.'_key'] = ['nullable', 'string', 'max:4096', "prohibited_if:remove_{$provider}_key,true"];
             $rules["remove_{$provider}_key"] = ['sometimes', 'boolean'];
+            $rules["enable_{$provider}"] = ['sometimes', 'boolean'];
         }
         $data = $request->validate($rules);
-        $keys = $changes = [];
+        $keys = $enabled = [];
         foreach (array_keys(AiProviderCredentials::PROVIDERS) as $provider) {
             $key = $data[$provider.'_key'] ?? null;
             $remove = (bool) ($data["remove_{$provider}_key"] ?? false);
             if ($remove || $key !== null) {
                 $keys[$provider] = $remove ? null : $key;
-                $changes[$provider] = $remove ? 'removed' : 'saved';
+            }
+            if (array_key_exists("enable_{$provider}", $data)) {
+                $enabled[$provider] = (bool) $data["enable_{$provider}"];
             }
         }
 
-        if ($changes !== []) {
-            DB::transaction(function () use ($request, $credentials, $audit, $keys, $changes): void {
+        if ($keys !== [] || $enabled !== []) {
+            DB::transaction(function () use ($request, $credentials, $audit, $keys, $enabled): void {
                 $credentials->put($keys);
-                $audit($request->user()->id, 'settings.ai_provider_keys_updated', 'settings', 0, $changes);
+                $credentials->setEnabled($enabled);
+                $audit($request->user()->id, 'settings.ai_provider_keys_updated', 'settings', 0, [
+                    'keys' => array_map(fn (?string $key): string => $key === null ? 'removed' : 'saved', $keys),
+                    'enabled' => $enabled,
+                ]);
             });
             Inertia::flash('success', __('workspace.settings_saved'));
         }
