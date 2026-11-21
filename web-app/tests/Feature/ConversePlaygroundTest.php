@@ -347,13 +347,29 @@ it('saves ordered workflows and reports rejected, skipped and accepted attempts 
     expect(app(ConverseAiSettings::class)->public()['workflows'][0]['name'])->toBe('Complex WhatsApp support');
 });
 
-it('exposes the development runbook only to authorized channel administrators', function () {
-    $route = route('converse.development');
-    $this->actingAs(User::factory()->create()->assignRole('staff'))->get($route)->assertForbidden();
-    $this->actingAs(User::factory()->create()->assignRole('administrator'))->get($route)
-        ->assertOk()->assertInertia(fn ($page) => $page->component('Converse/Development')
-        ->where('runbook', fn (string $html) => str_contains($html, 'converse-knowledge')
-            && str_contains($html, '/api/v1/converse/webhooks/whatsapp')
-            && str_contains($html, 'Phone Number ID')
-            && ! str_contains($html, 'fixture-openai-token')));
+it('removes the development runbook route', function () {
+    $this->actingAs(User::factory()->create()->assignRole('administrator'))
+        ->get('/converse/development')->assertNotFound();
+});
+
+it('opens the selected enabled collection from Knowledge and limits correction options to approved catalog files', function () {
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture example', 'enabled' => true]);
+    $disabled = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Disabled example', 'enabled' => false]);
+    $admin = User::factory()->create()->assignRole('administrator');
+    foreach ([true, false] as $approved) {
+        DB::table('cv_outbound_assets')->insert([
+            'collection_id' => $collection, 'owner_id' => $admin->id,
+            'title' => $approved ? 'Approved guide' : 'Draft guide',
+            'name' => 'guide.pdf', 'path' => 'guide.pdf',
+            'mime' => 'application/pdf', 'bytes' => 123, 'digest' => str_repeat('a', 64),
+            'approved' => $approved, 'created_at' => now(),
+        ]);
+    }
+
+    $this->actingAs($admin)->get(route('converse.playground.index', ['collection' => $collection]))
+        ->assertInertia(fn ($page) => $page->component('Converse/Playground')
+            ->where('initialCollection', $collection)->where('canTrain', true)
+            ->has('correctionAttachments', 1)->where('correctionAttachments.0.title', 'Approved guide'));
+    $this->get(route('converse.playground.index', ['collection' => $disabled]))
+        ->assertInertia(fn ($page) => $page->where('initialCollection', null));
 });

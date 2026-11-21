@@ -1,13 +1,13 @@
 <script setup>
-import { Head, Link, useHttp, useForm, usePage, usePoll } from '@inertiajs/vue3';
-import { computed, nextTick, ref, useId, watch } from 'vue';
+import { Head, Link, useForm, usePage, usePoll } from '@inertiajs/vue3';
+import { computed, ref, useId, watch } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import ConverseCorrectionEditor from '../../components/ConverseCorrectionEditor.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
-import { formatDhakaDateTime } from '../../lib/format';
 
 const props = defineProps({
     collections: { type: Object, required: true },
@@ -150,66 +150,10 @@ function saveCollectionForm() {
     });
 }
 
-// Test chat: ask against one collection or all collections and inspect the
-// grounded answer; unexpected replies become trained corrections.
-const chat = useHttp({ collection: null, message: '', history: [] });
-const chatScope = ref('all');
-const chatMessage = ref('');
-const chatBusy = ref(false);
-const chatTranscript = ref([]);
-const chatError = ref(false);
-const chatBox = ref(null);
-
-async function askChat() {
-    const message = chatMessage.value.trim();
-    if (!message || chatBusy.value) return;
-    chatBusy.value = true;
-    chatError.value = false;
-    chat.history = chatTranscript.value.slice(-10).map((item) => ({
-        direction: item.role === 'user' ? 'in' : 'out',
-        body: (item.messages ?? [item.body]).join('\n\n').slice(0, 2000),
-    }));
-    chatTranscript.value.push({ role: 'user', body: message, at: new Date().toISOString() });
-    chatMessage.value = '';
-    try {
-        chat.message = message;
-        chat.collection = chatScope.value === 'all' ? null : Number(chatScope.value);
-        const response = await chat.post('/converse/knowledge/chat');
-        chatTranscript.value.push({ role: 'ai', at: new Date().toISOString(), ...response.reply });
-    } catch {
-        chatError.value = true;
-    } finally {
-        chatBusy.value = false;
-        await nextTick(() => chatBox.value?.scrollTo({ top: chatBox.value.scrollHeight }));
-    }
-}
-
-const correctionForm = useForm({ collection_id: null, question: '', answer: '', follow_up: '', catalog_attachment_id: null });
-const correctionPanel = ref(false);
 const editingCorrection = ref(null);
 const correctionAction = useForm({});
-const correctionAttachments = computed(() => correctionForm.collection_id === props.collection?.id
-    ? props.outboundAssets.filter((asset) => asset.approved) : []);
-
-function trainCorrection(question, item = null) {
-    correctionForm.reset();
-    correctionForm.clearErrors();
-    editingCorrection.value = item?.id ?? null;
-    correctionForm.question = item?.question ?? question;
-    correctionForm.collection_id = item ? item.collection_id : (props.collection?.id ?? null);
-    correctionForm.answer = item?.answer ?? '';
-    correctionForm.follow_up = item?.follow_up ?? '';
-    correctionForm.catalog_attachment_id = item?.catalog_attachment_id ?? null;
-    correctionPanel.value = true;
-}
-
-function saveCorrection() {
-    const path = '/converse/knowledge/corrections';
-    correctionForm.submit(editingCorrection.value ? 'patch' : 'post', editingCorrection.value ? path + '/' + editingCorrection.value : path, {
-        preserveScroll: true,
-        onSuccess: () => { correctionPanel.value = false; },
-    });
-}
+const correctionAttachments = computed(() => props.outboundAssets.filter((asset) => asset.approved)
+    .map((asset) => ({ ...asset, collection_id: props.collection?.id })));
 
 function toggleCorrection(item) {
     correctionAction.enabled = !item.enabled;
@@ -263,7 +207,10 @@ function save() {
                         <h2 class="text-sm font-semibold">{{ collection.name }}</h2>
                         <p v-if="Array.isArray(collection.keywords) && collection.keywords.length" class="text-xs text-muted">{{ collection.keywords.join(' · ') }}</p>
                     </div>
-                    <div class="flex gap-2">
+                    <div class="flex flex-wrap gap-2">
+                        <Link v-if="collection.enabled && !collection.is_demo && page.props.canManageConverseChannels" :href="`/converse/playground?collection=${collection.id}`" class="ui-button">
+                            <AppIcon name="play" />{{ labels.playground_test_collection }}
+                        </Link>
                         <button type="button" class="ui-button" @click="open('collection', collection)">{{ labels.edit_collection }}</button>
                         <button type="button" class="ui-button ui-button-primary" @click="open('entry')">{{ labels.add_entry }}</button>
                     </div>
@@ -284,57 +231,13 @@ function save() {
             </section>
         </div>
 
-        <section class="mt-3 rounded-lg border border-line bg-surface" aria-labelledby="knowledge-chat-title">
-            <header class="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
-                <div>
-                    <h2 id="knowledge-chat-title" class="flex items-center gap-2 text-sm font-semibold"><AppIcon name="play" class="text-muted" />{{ labels.knowledge_chat_title }}</h2>
-                    <p class="mt-0.5 text-xs text-muted">{{ labels.knowledge_chat_help }}</p>
-                </div>
-                <label class="text-xs font-medium">
-                    {{ labels.knowledge_chat_scope }}
-                    <select v-model="chatScope" class="ui-input mt-1 block" :disabled="chatBusy">
-                        <option value="all">{{ labels.knowledge_chat_automatic }}</option>
-                        <option v-for="row in collections.data" :key="row.id" :value="String(row.id)">{{ row.name }}</option>
-                    </select>
-                </label>
-            </header>
-            <div ref="chatBox" class="max-h-96 space-y-2 overflow-y-auto p-3">
-                <EmptyState v-if="!chatTranscript.length" icon="play" :title="labels.knowledge_chat_empty" />
-                <template v-for="(item, index) in chatTranscript" :key="index">
-                    <p v-if="item.role === 'user'" class="ms-auto w-fit max-w-[85%] whitespace-pre-wrap wrap-anywhere rounded-lg bg-selected p-2.5 text-[13px]">{{ item.body }}</p>
-                    <div v-else class="w-fit max-w-[85%] rounded-lg bg-page p-2.5">
-                        <div class="space-y-2">
-                            <p v-for="(message, part) in item.messages ?? [item.body]" :key="part" class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ message }}</p>
-                            <p v-if="item.attachment" class="rounded-md border border-line px-2 py-1 text-xs">{{ labels.knowledge_reply_attachment }} {{ item.attachment }}</p>
-                        </div>
-                        <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                            <span class="rounded-full px-2 py-0.5" :class="item.decision === 'send' ? 'bg-success/10 text-success' : 'bg-page'">{{ labels[`knowledge_chat_${item.decision}`] }}</span>
-                            <span v-if="item.correction" class="rounded-full bg-brand/10 px-2 py-0.5 text-brand">{{ labels.knowledge_correction_badge }}</span>
-                            <span v-else-if="item.provider">{{ item.provider }}<template v-if="item.model"> · {{ item.model }}</template></span>
-                            <span v-if="item.scope" class="rounded-full bg-selected px-2 py-0.5">{{ item.scope.label ?? labels.knowledge_chat_all_collections }}</span>
-                            <span v-for="source in item.sources" :key="source.id" class="rounded-full bg-page px-2 py-0.5">{{ source.title }}</span>
-                            <span>· {{ formatDhakaDateTime(item.at, page.props.locale) }}</span>
-                        </p>
-                        <button v-if="item.decision !== 'send' || !item.correction" type="button" class="ui-button mt-2 text-xs" @click="trainCorrection(chatTranscript[index - 1]?.body ?? '')">
-                            {{ labels.knowledge_train_answer }}
-                        </button>
-                    </div>
-                </template>
-            </div>
-            <form class="grid gap-2 border-t border-line p-3" @submit.prevent="askChat">
-                <p v-if="chatError" role="alert" class="text-xs text-danger">{{ labels.knowledge_chat_failed }}</p>
-                <textarea v-model="chatMessage" rows="2" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-[13px]" :placeholder="labels.knowledge_chat_placeholder" :disabled="chatBusy" />
-                <button type="submit" class="ui-button ui-button-primary justify-self-end" :disabled="chatBusy || !chatMessage.trim()">{{ labels.knowledge_chat_ask }}</button>
-            </form>
-        </section>
-
         <section class="mt-3 rounded-lg border border-line bg-surface p-3" aria-labelledby="knowledge-corrections-title">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <div>
                     <h2 id="knowledge-corrections-title" class="flex items-center gap-2 text-sm font-semibold"><AppIcon name="edit" class="text-muted" />{{ labels.knowledge_corrections_title }}</h2>
                     <p class="mt-0.5 text-xs text-muted">{{ labels.knowledge_corrections_help }}</p>
                 </div>
-                <button type="button" class="ui-button" @click="trainCorrection('')">{{ labels.knowledge_add_correction }}</button>
+                <button type="button" class="ui-button" @click="editingCorrection = { collection_id: collection?.id ?? null }">{{ labels.knowledge_add_correction }}</button>
             </div>
             <EmptyState v-if="!corrections.length" icon="book" :title="labels.knowledge_no_corrections" />
             <ul v-else class="divide-y divide-line">
@@ -349,7 +252,7 @@ function save() {
                         </p>
                     </div>
                     <div class="flex shrink-0 gap-2">
-                        <button type="button" class="ui-button" @click="trainCorrection('', item)">{{ labels.knowledge_edit_correction }}</button>
+                        <button type="button" class="ui-button" @click="editingCorrection = item">{{ labels.knowledge_edit_correction }}</button>
                         <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="toggleCorrection(item)">{{ labels[item.enabled ? 'disable' : 'enable'] }}</button>
                         <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="deleteCorrection(item)">{{ labels.delete }}</button>
                     </div>
@@ -421,38 +324,8 @@ function save() {
             </ul>
         </section>
 
-        <SlideOver v-if="correctionPanel" :title="labels.knowledge_train_title" :close-label="labels.close" :busy="correctionForm.processing" @close="correctionPanel = false">
-            <form :id="`${formId}-correction`" class="grid gap-3" @submit.prevent="saveCorrection">
-                <p class="text-xs text-muted">{{ labels.knowledge_train_help }}</p>
-                <FormField v-slot="attrs" :label="labels.knowledge_correction_question" :error="correctionForm.errors.question" required>
-                    <textarea v-bind="attrs" v-model="correctionForm.question" rows="2" maxlength="500" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
-                </FormField>
-                <FormField v-slot="attrs" :label="labels.knowledge_correction_answer" :error="correctionForm.errors.answer" required>
-                    <textarea v-bind="attrs" v-model="correctionForm.answer" rows="4" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
-                </FormField>
-                <FormField v-slot="attrs" :label="labels.knowledge_reply_follow_up" :error="correctionForm.errors.follow_up">
-                    <textarea v-bind="attrs" v-model="correctionForm.follow_up" rows="2" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
-                </FormField>
-                <FormField v-slot="attrs" :label="labels.knowledge_correction_scope">
-                    <select v-bind="attrs" v-model="correctionForm.collection_id" class="ui-input" :disabled="Boolean(editingCorrection)"
-                        @change="correctionForm.catalog_attachment_id = null">
-                        <option :value="null">{{ labels.knowledge_correction_global }}</option>
-                        <option v-for="row in collections.data" :key="row.id" :value="row.id">{{ row.name }}</option>
-                    </select>
-                </FormField>
-                <FormField v-if="correctionAttachments.length || correctionForm.catalog_attachment_id" v-slot="attrs"
-                    :label="labels.knowledge_reply_attachment" :error="correctionForm.errors.catalog_attachment_id">
-                    <select v-bind="attrs" v-model="correctionForm.catalog_attachment_id" class="ui-input">
-                        <option :value="null">{{ labels.knowledge_reply_no_attachment }}</option>
-                        <option v-for="asset in correctionAttachments" :key="asset.id" :value="asset.id">{{ asset.title }}</option>
-                    </select>
-                </FormField>
-            </form>
-            <template #footer>
-                <button type="button" class="ui-button" :disabled="correctionForm.processing" @click="correctionPanel = false">{{ labels.cancel }}</button>
-                <button type="submit" :form="`${formId}-correction`" class="ui-button ui-button-primary" :disabled="correctionForm.processing">{{ labels.save }}</button>
-            </template>
-        </SlideOver>
+        <ConverseCorrectionEditor v-if="editingCorrection" :correction="editingCorrection" :collections="collections.data"
+            :attachments="correctionAttachments" @close="editingCorrection = null" @saved="editingCorrection = null" />
 
         <SlideOver v-if="documentPanel && editingDocument" :title="labels.knowledge_edit_document" :close-label="labels.close" :busy="documentForm.processing" @close="documentPanel = false">
             <form :id="`${formId}-document`" class="grid gap-3" @submit.prevent="saveDocument(editingDocument.id)">

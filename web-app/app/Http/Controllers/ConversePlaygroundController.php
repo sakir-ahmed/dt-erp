@@ -6,10 +6,10 @@ use App\Actions\AiProviderCredentials;
 use App\Actions\ComposeConverseReply;
 use App\Actions\ConverseAiSettings;
 use App\Actions\RouteConverseDraft;
+use App\Enums\WorkspacePermission;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -29,19 +29,13 @@ class ConversePlaygroundController extends Controller
         'banglish' => 'Sample project board kivabe kaj kore?',
     ];
 
-    public function development(): Response
-    {
-        $markdown = file_get_contents(resource_path('docs/converse-development.md'));
-
-        return Inertia::render('Converse/Development', [
-            'runbook' => Str::markdown($markdown, ['html_input' => 'strip', 'allow_unsafe_links' => false]),
-        ]);
-    }
-
     public function index(Request $request, ConverseAiSettings $configuration): Response
     {
         $demo = (bool) $request->user()->is_demo;
         $settings = $demo ? null : $configuration->public();
+        $collections = $demo ? collect() : DB::table('cv_knowledge_collections')->where('is_demo', false)
+            ->where('enabled', true)->orderBy('name')->get(['id', 'name']);
+        $canTrain = ! $demo && $request->user()->can(WorkspacePermission::ManageConverseKnowledge->value);
 
         return Inertia::render('Converse/Playground', [
             'ollamaAvailable' => $settings['ollama_enabled'] ?? true,
@@ -49,8 +43,13 @@ class ConversePlaygroundController extends Controller
                 ->get(['id', 'name', 'type'])->map(fn (object $channel): array => [
                     ...((array) $channel), 'collections' => $settings['channels'][$channel->id]['collections'] ?? [],
                 ]),
-            'collections' => $demo ? [] : DB::table('cv_knowledge_collections')->where('is_demo', false)
-                ->where('enabled', true)->orderBy('name')->get(['id', 'name']),
+            'collections' => $collections,
+            'initialCollection' => $collections->firstWhere('id', $request->integer('collection'))?->id,
+            'canTrain' => $canTrain,
+            'correctionAttachments' => $canTrain ? DB::table('cv_outbound_assets')
+                ->whereIn('collection_id', $collections->pluck('id'))
+                ->whereNull('conversation_id')->where('approved', true)
+                ->orderBy('title')->get(['id', 'collection_id', 'title']) : [],
             'samples' => self::SAMPLES,
             'knowledgeSamples' => self::KNOWLEDGE_SAMPLES,
             'sandboxAvailable' => $this->sandboxCollection() !== null,
@@ -73,6 +72,10 @@ class ConversePlaygroundController extends Controller
             'sandbox' => ['sometimes', 'boolean'],
             'complex' => ['sometimes', 'boolean'],
             'message' => ['exclude_unless:mode,knowledge', 'required', 'string', 'min:2', 'max:2000'],
+            'history' => ['exclude_unless:mode,knowledge', 'sometimes', 'array', 'list', 'max:10'],
+            'history.*' => ['required', 'array:direction,body'],
+            'history.*.direction' => ['required', Rule::in(['in', 'out'])],
+            'history.*.body' => ['required', 'string', 'max:2000'],
             'collection' => ['exclude_unless:mode,knowledge', 'nullable', 'integer', Rule::exists('cv_knowledge_collections', 'id')
                 ->where('is_demo', false)->where('enabled', true)],
             'channel' => ['exclude_unless:mode,knowledge', 'nullable', 'integer', Rule::exists('cv_channel_accounts', 'id')
@@ -93,7 +96,9 @@ class ConversePlaygroundController extends Controller
                 throw ValidationException::withMessages(['collection' => __('workspace.playground_collection_unavailable')]);
             }
 
-            $turn = $compose(collect([(object) ['direction' => 'in', 'body' => $data['message']]]), [
+            $history = collect($data['history'] ?? [])->map(fn (array $message): object => (object) $message)
+                ->push((object) ['direction' => 'in', 'body' => $data['message']]);
+            $turn = $compose($history, [
                 ...$settings, 'local_only' => true, 'origin' => 'playground',
                 'knowledge_scope_mode' => isset($data['collection']) ? 'manual' : 'automatic',
                 'knowledge_collection_ids' => isset($data['collection']) ? $scope : [],
@@ -143,6 +148,7 @@ class ConversePlaygroundController extends Controller
                 'text' => $turn['body'], 'messages' => $turn['messages'] ?? [$turn['body']],
                 'decision' => $turn['decision'], 'intent' => $turn['intent'], 'scope' => $turn['scope'],
                 'provider' => $turn['provider'] ?? null, 'model' => $turn['model'] ?? null,
+                'correction' => ($turn['correction'] ?? false) === true,
                 'fallback' => $turn['fallback'] ?? false, 'source_ids' => $turn['source_ids'],
                 'sources' => DB::table('cv_knowledge_entries')->whereIn('id', $turn['source_ids'])->get(['id', 'title']),
                 'attachment' => $turn['asset_title'] ?? null,

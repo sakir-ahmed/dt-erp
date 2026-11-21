@@ -214,7 +214,7 @@ it('keeps the product in scope for a follow-up and respects an explicit switch',
     Http::assertNothingSent();
 });
 
-it('keeps a named service in scope and answers two distinct questions from its published prices', function () {
+it('keeps a named service in scope and answers two distinct questions from its published prices', function (bool $playground) {
     $collection = knowledgeChatCollection('Software and services');
     $product = DB::table('cv_knowledge_entries')->insertGetId([
         'collection_id' => $collection, 'kind' => 'product', 'title' => 'DT Widget',
@@ -245,21 +245,23 @@ it('keeps a named service in scope and answers two distinct questions from its p
         ]]);
     }]);
 
+    $reply = $playground ? 'draft' : 'reply';
     $this->actingAs(User::factory()->create()->assignRole('administrator'))
-        ->postJson('/converse/knowledge/chat', [
+        ->postJson($playground ? route('converse.playground.run') : '/converse/knowledge/chat', [
+            ...($playground ? ['mode' => 'knowledge', 'language' => 'en'] : []),
             'message' => 'What is the monthly price and installation fee?',
             'history' => [
                 ['direction' => 'in', 'body' => 'Tell me about DT Widget'],
                 ['direction' => 'in', 'body' => 'I am asking about Managed Setup now'],
             ],
         ])->assertOk()
-        ->assertJsonPath('reply.scope.type', 'service')
-        ->assertJsonPath('reply.scope.subject_id', $service)
-        ->assertJsonPath('reply.messages', [
+        ->assertJsonPath($reply.'.scope.type', 'service')
+        ->assertJsonPath($reply.'.scope.subject_id', $service)
+        ->assertJsonPath($reply.'.messages', [
             'Managed Setup price: 1200 BDT per month',
             "Managed Setup price: 2500 BDT one time\n\nIs there anything else I can help with?",
         ]);
-});
+})->with([false, true]);
 
 it('manages corrections with validation, scoping and permissions', function () {
     $admin = User::factory()->create()->assignRole('administrator');

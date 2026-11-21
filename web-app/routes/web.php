@@ -94,7 +94,6 @@ Route::middleware('auth')->group(function () {
         ->middleware('throttle:30,1')
         ->name('converse.inbox.reply');
     Route::middleware('can:'.WorkspacePermission::ManageConverseChannels->value)->group(function () {
-        Route::get('/converse/development', [ConversePlaygroundController::class, 'development'])->name('converse.development');
         Route::get('/converse/playground', [ConversePlaygroundController::class, 'index'])->name('converse.playground.index');
         Route::post('/converse/playground', [ConversePlaygroundController::class, 'run'])->middleware('throttle:10,1')->name('converse.playground.run');
         Route::patch('/converse/playground/routing', [ConverseAiConfigurationController::class, 'saveRouting'])->name('converse.playground.routing');
