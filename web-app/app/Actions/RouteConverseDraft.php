@@ -57,7 +57,8 @@ class RouteConverseDraft
         }
 
         $response = Http::asJson()->acceptJson()->withoutRedirecting()
-            ->connectTimeout(3)->timeout(12)
+            // CPU-only inference of small local models can exceed 12s under load.
+            ->connectTimeout(3)->timeout(45)
             ->post("http://127.0.0.1:{$port}/api/chat", [
                 'model' => $model,
                 'stream' => false,
