@@ -94,7 +94,7 @@ class ConversePlaygroundController extends Controller
             }
 
             $turn = $compose(collect([(object) ['direction' => 'in', 'body' => $data['message']]]), [
-                ...$settings, 'local_only' => true,
+                ...$settings, 'local_only' => true, 'origin' => 'playground',
                 'knowledge_scope_mode' => isset($data['collection']) ? 'manual' : 'automatic',
                 'knowledge_collection_ids' => isset($data['collection']) ? $scope : [],
             ]);
@@ -106,7 +106,7 @@ class ConversePlaygroundController extends Controller
             abort_if($collection === null, 404);
             $sample = self::KNOWLEDGE_SAMPLES[$data['language']];
             $turn = $compose(collect([(object) ['direction' => 'in', 'body' => $sample]]), [
-                'collections' => [$collection], 'sandbox' => true,
+                'collections' => [$collection], 'sandbox' => true, 'origin' => 'playground',
             ]);
 
             return $this->knowledgeResult($turn, $started);
@@ -130,6 +130,7 @@ class ConversePlaygroundController extends Controller
             recordAttempt: function (array $attempt) use (&$attempts): void {
                 $attempts[] = $attempt;
             },
+            callContext: ['origin' => 'playground'],
         );
 
         return response()->json(['draft' => $result, 'attempts' => $attempts, 'duration_ms' => $this->duration($started)]);

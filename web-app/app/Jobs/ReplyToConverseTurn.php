@@ -69,6 +69,7 @@ class ReplyToConverseTurn implements ShouldQueue
             ->where(fn ($query) => $query->where('direction', 'in')->orWhereIn('delivery_status', RecordWhatsAppDeliveryStatus::ACCEPTED))
             ->orderByDesc('occurred_at')->orderByDesc('id')->limit(12)->get(['direction', 'body', 'outbound_asset_id'])->reverse()->values();
         $reply = $compose($history, [...$settings,
+            'conversation_id' => (int) $thread->id,
             'memory' => json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR),
             'language_preference' => $thread->language_preference,
             'channel' => $thread->channel,

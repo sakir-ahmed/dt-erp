@@ -3,11 +3,12 @@
 namespace App\Actions;
 
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 class EmbedConverseText
 {
-    public function __construct(private ConverseAiSettings $configuration) {}
+    public function __construct(private ConverseAiSettings $configuration, private RecordConverseAiCall $recordCall) {}
 
     /** @param list<string> $texts
      * @return list<list<float|int>>|null
@@ -21,15 +22,30 @@ class EmbedConverseText
             return null;
         }
 
+        $started = hrtime(true);
         try {
             $response = Http::asJson()->withoutRedirecting()->connectTimeout(2)->timeout($timeout)
                 ->post("http://127.0.0.1:{$port}/api/embed", ['model' => $model, 'input' => $texts]);
         } catch (ConnectionException) {
-            return null;
+            $response = null;
         }
 
-        $vectors = $response->successful() ? $response->json('embeddings') : null;
-        if (! is_array($vectors) || ! array_is_list($vectors) || count($vectors) !== count($texts)) {
+        $vectors = $this->validVectors($response, count($texts));
+        ($this->recordCall)([
+            'provider' => 'ollama', 'model' => $model, 'operation' => 'embedding', 'origin' => 'knowledge',
+            'status' => $vectors !== null ? 'accepted' : ($response?->successful() ? 'rejected' : 'unavailable'),
+            'duration_ms' => (int) ((hrtime(true) - $started) / 1_000_000),
+        ], $response, [
+            'input' => implode("\n\n", array_slice($texts, 0, 4)),
+        ], $settings['cloud_keys']);
+
+        return $vectors;
+    }
+
+    private function validVectors(?Response $response, int $count): ?array
+    {
+        $vectors = $response?->successful() ? $response->json('embeddings') : null;
+        if (! is_array($vectors) || ! array_is_list($vectors) || count($vectors) !== $count) {
             return null;
         }
 

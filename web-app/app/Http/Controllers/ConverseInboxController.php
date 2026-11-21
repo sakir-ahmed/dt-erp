@@ -168,6 +168,7 @@ class ConverseInboxController extends Controller
         abort_unless($history->isNotEmpty() && $history->last()->direction === 'in', 422);
 
         $draft = $compose($history, [...$settings,
+            'origin' => 'draft', 'conversation_id' => $conversation,
             'memory' => json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR),
             'language_preference' => $thread->language_preference,
             'channel' => $thread->channel,

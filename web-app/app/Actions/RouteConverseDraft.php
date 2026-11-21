@@ -19,10 +19,10 @@ class RouteConverseDraft
         'additionalProperties' => false,
     ];
 
-    public function __construct(private ConverseAiSettings $configuration) {}
+    public function __construct(private ConverseAiSettings $configuration, private RecordConverseAiCall $recordCall) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool, workflow?: string, workflow_agent?: string}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null, array $workflowContext = [], ?callable $recordAttempt = null): ?array
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null, array $workflowContext = [], ?callable $recordAttempt = null, array $callContext = []): ?array
     {
         $settings = $this->configuration->get();
         $local = array_values(array_unique(array_filter([
@@ -77,23 +77,31 @@ class RouteConverseDraft
                 $prompt .= "\nAgent guidance: ".mb_substr($agentInstructions, 0, 450);
             }
             $started = hrtime(true);
+            $externalInput = $provider === 'ollama' ? $input : ($cloudInput ?? $input);
+            $connectionFailed = false;
             try {
-                $externalInput = $cloudInput ?? $input;
-                $text = match ($provider) {
+                [$text, $response] = match ($provider) {
                     'ollama' => $this->ollama($model, $prompt, $input, (int) $settings['ollama_port'], $accept !== null, $timeout),
                     'openai' => $this->openAi($model, $prompt, $externalInput, $key, $timeout),
                     'anthropic' => $this->anthropic($model, $prompt, $externalInput, $key, $timeout),
                     default => $this->chatCompletions($provider, $model, $prompt, $externalInput, $key, $accept !== null, $timeout),
                 };
             } catch (ConnectionException) {
-                $text = null;
+                $text = $response = null;
+                $connectionFailed = true;
             }
             $elapsed = (hrtime(true) - $started) / 1_000_000_000;
             $budget[$group] -= $elapsed;
             $accepted = $text !== null && ($accept === null || $accept($text));
+            $attempt += ['status' => $accepted ? 'accepted' : ($text === null ? 'unavailable' : 'rejected'),
+                'duration_ms' => (int) ($elapsed * 1000)];
+            if ($response !== null || $connectionFailed) {
+                ($this->recordCall)([...$attempt, 'operation' => 'chat', 'origin' => $callContext['origin'] ?? 'reply',
+                    'conversation_id' => $callContext['conversation_id'] ?? null], $response,
+                    ['instructions' => $prompt, 'input' => $externalInput, 'output' => $text], $settings['cloud_keys']);
+            }
             if ($recordAttempt !== null) {
-                $recordAttempt([...$attempt, 'status' => $accepted ? 'accepted' : ($text === null ? 'unavailable' : 'rejected'),
-                    'duration_ms' => (int) ($elapsed * 1000)]);
+                $recordAttempt($attempt);
             }
 
             if ($accepted) {
@@ -149,15 +157,15 @@ class RouteConverseDraft
         return $candidates;
     }
 
-    private function ollama(string $model, string $instructions, string $input, int $port, bool $structured, float $timeout): ?string
+    private function ollama(string $model, string $instructions, string $input, int $port, bool $structured, float $timeout): array
     {
         // Accept only a bare, installed model name. Cloud-backed and registry references are excluded.
         if (! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model) || str_contains(strtolower($model), 'cloud')) {
-            return null;
+            return [null, null];
         }
 
         if ($port < 1 || $port > 65535) {
-            return null;
+            return [null, null];
         }
 
         $response = Http::asJson()->acceptJson()->withoutRedirecting()
@@ -175,12 +183,12 @@ class RouteConverseDraft
                 ],
             ]);
 
-        return $response->successful() && $response->json('done') === true
+        return [$response->successful() && $response->json('done') === true
             && $response->json('done_reason') === 'stop'
-            ? $this->validatedText($response->json('message.content')) : null;
+            ? $this->validatedText($response->json('message.content')) : null, $response];
     }
 
-    private function openAi(string $model, string $instructions, string $input, string $key, float $timeout): ?string
+    private function openAi(string $model, string $instructions, string $input, string $key, float $timeout): array
     {
         $response = Http::asJson()->acceptJson()->withoutRedirecting()->withToken($key)
             ->connectTimeout(3)->timeout($timeout)
@@ -193,7 +201,7 @@ class RouteConverseDraft
             ]);
 
         if (! $response->successful() || $response->json('status') !== 'completed') {
-            return null;
+            return [null, $response];
         }
 
         $parts = [];
@@ -204,7 +212,7 @@ class RouteConverseDraft
 
             foreach ((array) data_get($item, 'content', []) as $content) {
                 if (data_get($content, 'type') === 'refusal') {
-                    return null;
+                    return [null, $response];
                 }
 
                 if (data_get($content, 'type') === 'output_text' && is_string(data_get($content, 'text'))) {
@@ -213,10 +221,10 @@ class RouteConverseDraft
             }
         }
 
-        return $this->validatedText(implode("\n", $parts));
+        return [$this->validatedText(implode("\n", $parts)), $response];
     }
 
-    private function chatCompletions(string $provider, string $model, string $instructions, string $input, string $key, bool $structured, float $timeout): ?string
+    private function chatCompletions(string $provider, string $model, string $instructions, string $input, string $key, bool $structured, float $timeout): array
     {
         $openRouter = $provider === 'openrouter';
         $response = Http::asJson()->acceptJson()->withoutRedirecting()->withToken($key)
@@ -224,7 +232,7 @@ class RouteConverseDraft
             ->post($openRouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.deepseek.com/chat/completions', [
                 'model' => $model, 'max_tokens' => 350, 'stream' => false,
                 ...($structured ? ['response_format' => ['type' => 'json_object']] : []),
-                ...($openRouter ? ['provider' => ['sort' => 'price', 'data_collection' => 'deny', 'zdr' => true,
+                ...($openRouter ? ['usage' => ['include' => true], 'provider' => ['sort' => 'price', 'data_collection' => 'deny', 'zdr' => true,
                     'require_parameters' => true]] : ['thinking' => ['type' => 'disabled']]),
                 'messages' => [
                     ['role' => 'system', 'content' => $instructions],
@@ -232,11 +240,11 @@ class RouteConverseDraft
                 ],
             ]);
 
-        return $response->successful() && $response->json('choices.0.finish_reason') === 'stop'
-            ? $this->validatedText($response->json('choices.0.message.content')) : null;
+        return [$response->successful() && $response->json('choices.0.finish_reason') === 'stop'
+            ? $this->validatedText($response->json('choices.0.message.content')) : null, $response];
     }
 
-    private function anthropic(string $model, string $instructions, string $input, string $key, float $timeout): ?string
+    private function anthropic(string $model, string $instructions, string $input, string $key, float $timeout): array
     {
         $response = Http::asJson()->acceptJson()->withoutRedirecting()->withHeaders([
             'x-api-key' => $key, 'anthropic-version' => '2023-06-01',
@@ -245,10 +253,10 @@ class RouteConverseDraft
             'messages' => [['role' => 'user', 'content' => $input]],
         ]);
         if (! $response->successful() || $response->json('stop_reason') !== 'end_turn') {
-            return null;
+            return [null, $response];
         }
 
-        return $this->validatedText(collect($response->json('content', []))->where('type', 'text')->pluck('text')->implode("\n"));
+        return [$this->validatedText(collect($response->json('content', []))->where('type', 'text')->pluck('text')->implode("\n")), $response];
     }
 
     private function validatedText(mixed $text): ?string

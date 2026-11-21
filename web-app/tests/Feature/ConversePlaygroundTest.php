@@ -2,6 +2,8 @@
 
 use App\Actions\AiProviderCredentials;
 use App\Actions\ConverseAiSettings;
+use App\Actions\EmbedConverseText;
+use App\Actions\RouteConverseDraft;
 use App\Enums\WorkspaceRole;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
@@ -32,6 +34,7 @@ it('routes only synthetic content, falls back to OpenAI when permitted and retur
         'https://api.openai.com/v1/responses' => Http::response([
             'status' => 'completed',
             'output' => [['type' => 'message', 'role' => 'assistant', 'content' => [['type' => 'output_text', 'text' => 'Thanks for reaching out.']]]],
+            'usage' => ['input_tokens' => 40, 'output_tokens' => 10, 'total_tokens' => 50],
         ]),
     ]);
 
@@ -44,6 +47,10 @@ it('routes only synthetic content, falls back to OpenAI when permitted and retur
         && $request['input'] === 'Hello, could I speak to a team member?'
         && $request['store'] === false
         && $request->hasHeader('Authorization', 'Bearer fixture-openai-token'));
+    $this->assertDatabaseHas('cv_ai_calls', ['origin' => 'playground', 'provider' => 'ollama', 'status' => 'unavailable',
+        'http_status' => 503, 'total_tokens' => null, 'billing' => 'local']);
+    $this->assertDatabaseHas('cv_ai_calls', ['origin' => 'playground', 'provider' => 'openai', 'status' => 'accepted',
+        'http_status' => 200, 'input_tokens' => 40, 'output_tokens' => 10, 'total_tokens' => 50, 'billing' => 'paid', 'reported_cost_usd' => null]);
 });
 
 it('enforces local-only mode and demo isolation even when cloud is configured', function () {
@@ -72,6 +79,70 @@ it('returns a usable local draft and refuses the playground to staff', function 
     $this->actingAs(User::factory()->create()->assignRole(WorkspaceRole::Administrator->value))
         ->postJson($url, $input)->assertOk()->assertJsonPath('draft.provider', 'ollama')->assertJsonPath('draft.fallback', false);
     Http::assertSentCount(1);
+});
+
+it('shows filtered call statistics and provides redacted details only to settings administrators', function () {
+    $secret = 'fixture-router-credential';
+    app(AiProviderCredentials::class)->put(['openrouter' => $secret]);
+    config(['converse.ai.cloud.models' => [
+        ['provider' => 'openrouter', 'model' => 'fixture/free:free', 'tier' => 'free'],
+        ['provider' => 'openrouter', 'model' => 'fixture/economy', 'tier' => 'economy'],
+    ]]);
+    Http::fake(['https://openrouter.ai/api/v1/chat/completions' => Http::sequence()
+        ->push([
+            'model' => 'fixture/free',
+            'choices' => [['finish_reason' => 'stop', 'message' => ['content' => 'Answer rejected by the validator.']]],
+            'usage' => ['prompt_tokens' => 11, 'completion_tokens' => 9, 'cost' => 0],
+        ])
+        ->push([
+            'model' => 'fixture/economy',
+            'choices' => [['finish_reason' => 'stop', 'message' => ['content' => 'A grounded reply.']]],
+            'usage' => ['prompt_tokens' => 20, 'completion_tokens' => 10, 'total_tokens' => 30, 'cost' => 0.00012],
+        ])]);
+    app(RouteConverseDraft::class)('Support instructions', json_encode([
+        'question' => "Contact example@example.test at +8801712345678; internal text {$secret}.",
+        'memory' => 'Private memory',
+    ]), localOnly: false, accept: fn ($text) => $text === 'A grounded reply.', cloudOnly: true);
+
+    Http::assertSent(fn (Request $request) => $request['usage'] === ['include' => true]);
+    $row = DB::table('cv_ai_calls')->where('billing', 'free')->sole();
+    expect($row->total_tokens)->toBe(20);
+    expect($row->detail)->not->toContain('Support instructions', 'example@example.test', $secret);
+    $this->assertDatabaseHas('cv_ai_calls', ['provider' => 'openrouter', 'billing' => 'paid', 'reported_cost_usd' => 0.00012]);
+
+    $index = route('converse.ai-calls.index', ['provider' => 'openrouter', 'status' => 'rejected']);
+    $show = route('converse.ai-calls.show', $row->id);
+    foreach ([
+        User::factory()->create()->assignRole(WorkspaceRole::Staff->value),
+        User::factory()->create(['is_demo' => true])->assignRole(WorkspaceRole::Administrator->value),
+    ] as $user) {
+        $this->actingAs($user)->get($index)->assertForbidden();
+        $this->getJson($show)->assertForbidden();
+    }
+
+    $this->actingAs(User::factory()->create()->assignRole(WorkspaceRole::Administrator->value));
+    $this->get($index)->assertInertia(fn ($page) => $page
+        ->component('Converse/AiCalls')
+        ->where('totals.calls', 1)->where('totals.free_calls', 1)->where('totals.tokens', 20)
+        ->where('calls.data.0.id', $row->id)->missing('calls.data.0.detail'));
+
+    $response = $this->getJson($show)->assertOk()->assertHeaderContains('Cache-Control', 'no-store')
+        ->assertJsonPath('detail.instructions', 'Support instructions')
+        ->assertJsonPath('detail.output', 'Answer rejected by the validator.');
+    expect($response->json('detail.input'))->toContain('[redacted]')
+        ->not->toContain('example@example.test', '+8801712345678', $secret, 'Private memory');
+});
+
+it('records Ollama embedding token usage without storing the vectors', function () {
+    Http::fake(['http://127.0.0.1:11434/api/embed' => Http::response([
+        'embeddings' => [[0.1, 0.2]], 'prompt_eval_count' => 12,
+    ])]);
+    expect(app(EmbedConverseText::class)(['Synthetic knowledge'], 'fixture-embed'))->toBe([[0.1, 0.2]]);
+    $this->assertDatabaseHas('cv_ai_calls', [
+        'operation' => 'embedding', 'origin' => 'knowledge', 'billing' => 'local', 'status' => 'accepted',
+        'input_tokens' => 12, 'output_tokens' => 0, 'total_tokens' => 12,
+    ]);
+    expect(Crypt::decryptString(DB::table('cv_ai_calls')->soleValue('detail')))->not->toContain('0.1');
 });
 
 it('can disable and re-enable the local provider without disabling configured cloud tests', function () {

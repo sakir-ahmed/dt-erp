@@ -273,7 +273,7 @@ class ConverseKnowledgeController extends Controller
         $history = collect($data['history'] ?? [])->map(fn (array $row): object => (object) $row)
             ->push((object) ['direction' => 'in', 'body' => $data['message']]);
         $turn = $compose($history, [
-            'collections' => $scope, 'agent' => 'sales', 'memory' => [], 'sandbox' => false,
+            'collections' => $scope, 'agent' => 'sales', 'memory' => [], 'sandbox' => false, 'origin' => 'knowledge_test',
         ]);
 
         $sources = DB::table('cv_knowledge_entries')->whereIn('id', $turn['source_ids'] ?? [])

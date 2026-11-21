@@ -17,6 +17,9 @@ export function useWorkspaceNavigation() {
         ...(page.props.canManageConverseKnowledge ? [
             { group: 'converse', label: 'knowledge', href: '/converse/knowledge', icon: 'book', pages: ['Converse/Knowledge'] },
         ] : []),
+        ...(page.props.canViewConverseAiCalls ? [
+            { group: 'converse', label: 'ai_call_history', href: '/converse/ai-calls', icon: 'chart-line', pages: ['Converse/AiCalls'] },
+        ] : []),
         ...(page.props.canViewUsers ? [
             { group: 'admin_group', label: 'users', href: '/users', icon: 'users', search: 'search_users', pages: ['Users/Index'] },
         ] : []),

@@ -77,6 +77,7 @@ class ComposeConverseReply
         $complex = $compound || $intent === 'support'
             || preg_match('/\b(compare|difference|workflow|integrat\w*|connects?)\b|পার্থক্য|তুলনা|ইন্টিগ্রেশন|কাজ করে কীভাবে/ui', $latest) === 1;
         $workflowContext = $sandbox ? [] : [...$facts, 'collection_ids' => $collections];
+        $callContext = array_intersect_key($settings, ['origin' => true, 'conversation_id' => true]);
         $wantsFile = ! $sandbox && preg_match('/\b(attach|brochure|catalog(?:ue)?|pdf|product book|download|send (?:me )?(?:a |the )?(?:file|photo|image))\b|ব্রোশিওর|ক্যাটালগ|পিডিএফ|বই পাঠা|ছবি পাঠা/ui', $latest);
         $assets = $wantsFile && count($collections) === 1
             ? $this->assets->catalog($collections)->orderBy('asset.id')->limit(30)->get(['asset.id', 'asset.title'])
@@ -97,7 +98,7 @@ class ComposeConverseReply
                 $asset = null;
             }
             $attachment = $asset === null && $assets->isNotEmpty()
-                ? array_intersect_key($this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex), array_flip(['asset_id', 'asset_title', 'asset_collections', 'asset_agent', 'attempts']))
+                ? array_intersect_key($this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex, $callContext), array_flip(['asset_id', 'asset_title', 'asset_collections', 'asset_agent', 'attempts']))
                 : $this->attachment($asset, $collections, $agentName);
 
             return [...$turn, 'decision' => 'send', 'body' => $correction->answer, 'messages' => $messages,
@@ -118,7 +119,7 @@ class ComposeConverseReply
         }
 
         if ($wantsFile && ! $compound) {
-            return $this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex);
+            return $this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex, $callContext);
         }
         $priceTypes = array_keys(array_filter([
             'one_time' => '/\b(install(?:ation)?|setup|set.up|one.time)\b|ইনস্টল|সেটআপ|এককালীন/ui',
@@ -145,7 +146,7 @@ class ComposeConverseReply
         $entries = $entries->take($complex ? 7 : 4);
 
         if ($entries->isEmpty()) {
-            return $this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex);
+            return $this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex, $callContext);
         }
 
         $context = $history->take(-6)->values()->map(fn (object $row) => [
@@ -200,6 +201,7 @@ class ComposeConverseReply
             recordAttempt: function (array $attempt) use (&$attempts): void {
                 $attempts[] = $attempt;
             },
+            callContext: $callContext,
         );
         $turn['attempts'] = $attempts;
         if ($draft === null) {
@@ -274,7 +276,7 @@ class ComposeConverseReply
         return json_encode([...$facts, 'history' => $recent], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
     }
 
-    private function chooseAsset(Collection $history, Collection $assets, array $collections, string $agent, array $turn, bool $cloudEnabled, array $workflowContext, bool $complex): array
+    private function chooseAsset(Collection $history, Collection $assets, array $collections, string $agent, array $turn, bool $cloudEnabled, array $workflowContext, bool $complex, array $callContext): array
     {
         if ($assets->isEmpty()) {
             return $turn;
@@ -308,6 +310,7 @@ class ComposeConverseReply
             recordAttempt: function (array $attempt) use (&$attempts): void {
                 $attempts[] = $attempt;
             },
+            callContext: $callContext,
         );
         $turn['attempts'] = $attempts;
         if ($draft === null) {

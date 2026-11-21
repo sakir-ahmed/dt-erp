@@ -2,6 +2,7 @@
 
 use App\Actions\AiProviderCredentials;
 use App\Enums\WorkspacePermission;
+use App\Http\Controllers\ConverseAiCallController;
 use App\Http\Controllers\ConverseAiConfigurationController;
 use App\Http\Controllers\ConverseChannelController;
 use App\Http\Controllers\ConverseInboxController;
@@ -32,6 +33,10 @@ Route::middleware('guest')->group(function () {
 
 Route::middleware('auth')->group(function () {
     Route::get('/', DashboardController::class)->name('dashboard');
+    Route::get('/converse/ai-calls', [ConverseAiCallController::class, 'index'])
+        ->can(WorkspacePermission::ManageSettings->value)->name('converse.ai-calls.index');
+    Route::get('/converse/ai-calls/{call}', [ConverseAiCallController::class, 'show'])
+        ->whereNumber('call')->can(WorkspacePermission::ManageSettings->value)->name('converse.ai-calls.show');
     Route::get('/users', [UserDirectoryController::class, 'index'])
         ->can(WorkspacePermission::ViewUsers->value)
         ->name('users.index');

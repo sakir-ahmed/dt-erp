@@ -27,6 +27,8 @@ class HandleInertiaRequests extends Middleware
             'canViewConverseInbox' => fn () => $request->user()?->can(WorkspacePermission::ViewConverseInbox->value) ?? false,
             'canViewUsers' => fn () => $request->user()?->can(WorkspacePermission::ViewUsers->value) ?? false,
             'canManageSettings' => fn () => $request->user()?->can(WorkspacePermission::ManageSettings->value) ?? false,
+            'canViewConverseAiCalls' => fn () => $request->user() && ! $request->user()->is_demo
+                && $request->user()->can(WorkspacePermission::ManageSettings->value),
             'account' => function () use ($request): ?array {
                 $user = $request->user();
 
