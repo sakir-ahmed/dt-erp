@@ -47,6 +47,7 @@ class RouteConverseDraft
         $localCount = count(array_filter($eligible, fn (array $candidate): bool => $candidate[0] === 'ollama'));
         $remaining = ['local' => $localCount, 'cloud' => count($eligible) - $localCount];
         $budget = ['local' => (float) ($localBudget ?? 36), 'cloud' => 21.0];
+        $localConnectionFailed = false;
         foreach ($candidates as $index => $candidate) {
             [$provider, $model, $key] = $candidate;
             $agentId = $candidate[3] ?? $workflowContext['agent'] ?? null;
@@ -60,6 +61,13 @@ class RouteConverseDraft
             }
             $group = $provider === 'ollama' ? 'local' : 'cloud';
             $left = $remaining[$group]--;
+            if ($group === 'local' && $localConnectionFailed && $remaining['cloud'] > 0 && $workflow === null) {
+                if ($recordAttempt !== null) {
+                    $recordAttempt([...$attempt, 'status' => 'skipped', 'reason' => 'local_connection']);
+                }
+
+                continue;
+            }
             $timeout = match ($group) {
                 'local' => $left > 1 ? min(20, $budget[$group] / $left) : $budget[$group],
                 default => min($left > 1 ? 7 : 11, $budget[$group] / $left),
@@ -89,6 +97,7 @@ class RouteConverseDraft
             } catch (ConnectionException) {
                 $text = $response = null;
                 $connectionFailed = true;
+                $localConnectionFailed = $localConnectionFailed || $provider === 'ollama';
             }
             $elapsed = (hrtime(true) - $started) / 1_000_000_000;
             $budget[$group] -= $elapsed;
@@ -141,7 +150,7 @@ class RouteConverseDraft
             $models = [['provider' => 'openai', 'model' => $settings['openai_model'], 'tier' => 'economy']];
         }
         $candidates = [];
-        foreach ($complex ? ['free' => 1, 'economy' => 1, 'advanced' => 1] : ['free' => 1, 'economy' => 2] as $tier => $limit) {
+        foreach (['free' => 1, 'economy' => 2, 'advanced' => $complex ? 1 : 0] as $tier => $limit) {
             $tierCandidates = [];
             foreach ($models as $candidate) {
                 $provider = $candidate['provider'];
@@ -227,11 +236,13 @@ class RouteConverseDraft
     private function chatCompletions(string $provider, string $model, string $instructions, string $input, string $key, bool $structured, float $timeout): array
     {
         $openRouter = $provider === 'openrouter';
+        $deepSeekFlash = $openRouter && preg_match('~^deepseek/deepseek-v4(?:\.1)?-flash(?:[-:]|$)~i', $model);
         $response = Http::asJson()->acceptJson()->withoutRedirecting()->withToken($key)
             ->connectTimeout(3)->timeout($timeout)
             ->post($openRouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.deepseek.com/chat/completions', [
                 'model' => $model, 'max_tokens' => 350, 'stream' => false,
                 ...($structured ? ['response_format' => ['type' => 'json_object']] : []),
+                ...($deepSeekFlash ? ['reasoning' => ['enabled' => false]] : []),
                 ...($openRouter ? ['usage' => ['include' => true], 'provider' => ['sort' => 'price', 'data_collection' => 'deny', 'zdr' => true,
                     'require_parameters' => true]] : ['thinking' => ['type' => 'disabled']]),
                 'messages' => [

@@ -145,6 +145,45 @@ it('records Ollama embedding token usage without storing the vectors', function 
     expect(Crypt::decryptString(DB::table('cv_ai_calls')->soleValue('detail')))->not->toContain('0.1');
 });
 
+it('moves to cloud after a local connection failure and disables reasoning for DeepSeek Flash through OpenRouter', function () {
+    app(AiProviderCredentials::class)->put(['openrouter' => 'fixture-router']);
+    config([
+        'converse.ai.ollama_fallback_model' => 'fixture:larger',
+        'converse.ai.cloud.models' => [
+            ['provider' => 'openrouter', 'model' => 'fixture/free:free', 'tier' => 'free'],
+            ['provider' => 'openrouter', 'model' => 'deepseek/deepseek-v4-flash', 'tier' => 'economy'],
+        ],
+    ]);
+    Http::fake([
+        'http://127.0.0.1:11434/api/chat' => Http::failedConnection(),
+        'https://openrouter.ai/api/v1/chat/completions' => Http::sequence()
+            ->push(['error' => ['message' => 'Internal error details']], 404)
+            ->push([
+                'choices' => [['finish_reason' => 'stop', 'message' => ['content' => '{"source_ids":[42],"confidence":0.99}']]],
+                'usage' => ['prompt_tokens' => 72, 'completion_tokens' => 16, 'total_tokens' => 88],
+            ]),
+    ]);
+
+    $attempts = [];
+    $result = app(RouteConverseDraft::class)('Select one source.', 'Synthetic sample',
+        localOnly: false, accept: fn (string $text): bool => json_decode($text, true)['source_ids'] === [42],
+        cloudInput: 'Shareable sample',
+        recordAttempt: function (array $attempt) use (&$attempts): void {
+            $attempts[] = $attempt;
+        });
+
+    expect($result)->toMatchArray(['provider' => 'openrouter', 'model' => 'deepseek/deepseek-v4-flash', 'fallback' => true]);
+    expect(array_column($attempts, 'status'))->toBe(['unavailable', 'skipped', 'unavailable', 'accepted']);
+    expect($attempts[1]['reason'])->toBe('local_connection');
+    Http::assertSentCount(3);
+    Http::assertSent(fn (Request $request): bool => $request['model'] === 'deepseek/deepseek-v4-flash'
+        && $request['reasoning'] === ['enabled' => false]
+        && $request['provider']['zdr'] === true
+        && $request['provider']['data_collection'] === 'deny');
+    $detail = Crypt::decryptString(DB::table('cv_ai_calls')->where('http_status', 404)->soleValue('detail'));
+    expect($detail)->toContain('model_unavailable')->not->toContain('Internal error details');
+});
+
 it('can disable and re-enable the local provider without disabling configured cloud tests', function () {
     $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
     $form = ['primary' => 'ollama', 'allow_cloud' => true, 'ollama_port' => 11434,

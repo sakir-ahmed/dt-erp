@@ -57,6 +57,7 @@ const detailFields = computed(() => {
         ['agent', call.agent],
         ['workflow', call.workflow],
         ['http_status', call.http_status],
+        ['reason', labels.value[call.detail.reason]],
         ['input_tokens', number(call.input_tokens)],
         ['output_tokens', number(call.output_tokens)],
         ['reported_tokens', number(call.total_tokens)],

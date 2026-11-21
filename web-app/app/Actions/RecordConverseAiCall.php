@@ -35,6 +35,9 @@ class RecordConverseAiCall
             fn (?string $text): ?string => $text === null ? null : $this->redact($text, $secrets),
             $details,
         );
+        if ($call['status'] === 'unavailable') {
+            $summary['reason'] = $this->unavailableReason($response);
+        }
         try {
             DB::table('cv_ai_calls')->insert([
                 ...$call, ...$usage, 'model' => $model, 'billing' => $local ? 'local' : ($free ? 'free' : 'paid'),
@@ -45,6 +48,22 @@ class RecordConverseAiCall
         } catch (QueryException) {
             Log::warning('Unable to record Converse AI call', ['provider' => $provider, 'operation' => $call['operation']]);
         }
+    }
+
+    private function unavailableReason(?Response $response): ?string
+    {
+        return match (true) {
+            $response === null => 'connection_failed',
+            in_array($response->json('error.code'), ['insufficient_quota', 'billing_hard_limit_reached'], true),
+            $response->status() === 402 => 'quota',
+            $response->status() === 429 => 'rate_limited',
+            $response->status() === 404 => 'model_unavailable',
+            $response->json('choices.0.finish_reason') === 'length',
+            $response->json('incomplete_details.reason') === 'max_output_tokens',
+            $response->json('done_reason') === 'length',
+            $response->json('stop_reason') === 'max_tokens' => 'output_limit',
+            default => null,
+        };
     }
 
     private function usage(string $provider, ?Response $response, string $operation): array
