@@ -106,6 +106,37 @@ it('changes handling mode and status only with inbox management permission and a
         ->assertInertia(fn (Assert $page) => $page->has('conversations.data', 0));
 });
 
+it('lets inbox managers link several eligible collections and switch scope mode', function () {
+    $account = converseChannel('whatsapp');
+    $message = app(RecordConverseInboundMessage::class)($account, '8801000000123', 'scope-message', 'I need product information', now());
+    $thread = DB::table('cv_messages')->where('id', $message)->value('conversation_id');
+    $restora = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'DT Restora', 'enabled' => true]);
+    $erp = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'DT ERP', 'enabled' => true]);
+    $unavailable = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Internal', 'enabled' => true]);
+    config([
+        'converse.ai.channels' => [$account => ['agent' => 'sales', 'collections' => [$restora, $erp, $unavailable]]],
+        'converse.ai.agents.sales.collections' => [$restora, $erp],
+    ]);
+    $url = route('converse.inbox.knowledge-scope.update', $thread);
+    $viewer = User::factory()->create()->givePermissionTo('converse.inbox.view');
+    $staff = User::factory()->create()->assignRole(WorkspaceRole::Staff->value);
+    $data = ['mode' => 'manual', 'collection_ids' => [$restora, $erp]];
+
+    $this->actingAs($viewer)->put($url, $data)->assertForbidden();
+    $this->actingAs($staff)->put($url, ['mode' => 'manual', 'collection_ids' => []])->assertSessionHasErrors('collection_ids');
+    $this->put($url, ['mode' => 'manual', 'collection_ids' => [$unavailable]])->assertSessionHasErrors('collection_ids');
+    $this->put($url, $data)->assertRedirect();
+    $this->get(route('converse.inbox', $thread))->assertInertia(fn (Assert $page) => $page
+        ->where('thread.knowledge_scope.mode', 'manual')
+        ->has('thread.knowledge_scope.available', 2)
+        ->where('thread.knowledge_scope.collections.0.name', 'DT ERP')
+        ->where('thread.knowledge_scope.collections.1.name', 'DT Restora'));
+    $this->assertDatabaseHas('cv_audit_events', ['action' => 'conversation.knowledge_scope_updated', 'subject_id' => $thread, 'user_id' => $staff->id]);
+    $this->put($url, [...$data, 'mode' => 'automatic'])->assertRedirect();
+    $this->assertDatabaseHas('cv_conversations', ['id' => $thread, 'knowledge_scope_mode' => 'automatic',
+        'knowledge_collection_ids' => json_encode([$restora, $erp])]);
+});
+
 it('shows the selected Messenger sender profile and reuses it while polling', function () {
     Http::preventStrayRequests();
     $account = converseChannel('messenger');

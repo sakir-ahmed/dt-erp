@@ -36,6 +36,24 @@ const channel = ref(props.filters.channel);
 const status = ref(props.filters.status);
 const searching = ref(false);
 const state = useForm({ mode: '', status: '', search: '', channel: '', filter_status: '' });
+const knowledgeScopeOpen = ref(false);
+const knowledgeScopeForm = useForm({ mode: 'automatic', collection_ids: [] });
+
+function editKnowledgeScope() {
+    knowledgeScopeForm.clearErrors();
+    knowledgeScopeForm.mode = props.thread.knowledge_scope.mode;
+    knowledgeScopeForm.collection_ids = props.thread.knowledge_scope.collections.map(({ id }) => id);
+    knowledgeScopeOpen.value = true;
+}
+
+function saveKnowledgeScope() {
+    knowledgeScopeForm.put('/converse/inbox/' + props.thread.id + '/knowledge-scope', {
+        preserveScroll: true,
+        onSuccess: () => { knowledgeScopeOpen.value = false; },
+    });
+}
+
+watch(() => props.thread?.id, () => { knowledgeScopeOpen.value = false; });
 
 const reply = useForm({ body: '', operation_id: '', attachment: null, catalog_attachment_id: null });
 const filePicker = ref(null);
@@ -107,12 +125,12 @@ async function draftReply() {
 }
 const poll = usePoll(3000, { only: ['conversations', 'thread', 'messages', 'replyBlockedReason', 'aiTrace', 'tags'] }, { autoStart: false });
 
-function syncPoll(busy = [searching.value, state.processing, reply.processing, retryForm.processing]) {
+function syncPoll(busy = [searching.value, state.processing, reply.processing, retryForm.processing, knowledgeScopeForm.processing]) {
     if (busy.some(Boolean) || document.hidden) poll.stop();
     else poll.start();
 }
 
-watch([searching, () => state.processing, () => reply.processing, () => retryForm.processing], () => syncPoll(), { immediate: true });
+watch([searching, () => state.processing, () => reply.processing, () => retryForm.processing, () => knowledgeScopeForm.processing], () => syncPoll(), { immediate: true });
 
 function onVisibilityChange() {
     syncPoll();
@@ -456,8 +474,18 @@ function threadUrl(id) {
                     </details>
                     <p v-if="aiTrace" class="mt-1 text-xs text-muted">
                         {{ page.props.labels.ai_trace }} · {{ aiTrace.language }} · {{ aiTrace.decision }}<template v-if="aiTrace.model"> · {{ aiTrace.provider }} / {{ aiTrace.model }}</template>
-                        <span v-if="aiTrace.knowledge_scope" class="ms-1 rounded-full bg-selected px-2 py-0.5">{{ aiTrace.knowledge_scope.label ?? page.props.labels.knowledge_chat_all_collections }}</span>
+                        <span v-if="aiTrace.knowledge_scope" class="ms-1 rounded-full bg-selected px-2 py-0.5">{{ aiTrace.knowledge_scope.label ?? page.props.labels[aiTrace.knowledge_scope.type === 'none' ? 'inbox_knowledge_scope_none' : 'knowledge_chat_all_collections'] }}</span>
                     </p>
+                    <div v-if="thread.knowledge_scope" class="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2 text-xs">
+                        <span class="font-medium">{{ page.props.labels.knowledge_chat_scope }}</span>
+                        <span class="rounded-full bg-selected px-2 py-0.5">{{ page.props.labels['inbox_knowledge_scope_' + thread.knowledge_scope.mode] }}</span>
+                        <span v-for="collection in thread.knowledge_scope.collections" :key="collection.id"
+                            class="max-w-full wrap-anywhere rounded-full bg-page px-2 py-0.5 text-muted">{{ collection.name }}</span>
+                        <span v-if="!thread.knowledge_scope.collections.length" class="text-muted">{{ page.props.labels.inbox_knowledge_scope_none }}</span>
+                        <button v-if="canManageInbox" type="button" class="ui-button ms-auto text-xs" @click="editKnowledgeScope">
+                            {{ page.props.labels.inbox_knowledge_scope_edit }}
+                        </button>
+                    </div>
                 </header>
                 <form v-if="canManageInbox" class="flex flex-wrap items-end gap-2 border-b border-line p-3" @submit.prevent="saveState">
                     <label class="text-xs font-medium">
@@ -576,6 +604,35 @@ function threadUrl(id) {
             </div>
         </div>
 
+        <SlideOver v-if="knowledgeScopeOpen && thread" :title="page.props.labels.inbox_knowledge_scope_edit" :close-label="page.props.labels.close"
+            :busy="knowledgeScopeForm.processing" @close="knowledgeScopeOpen = false">
+            <form :id="formId + '-knowledge-scope'" class="grid gap-4" @submit.prevent="saveKnowledgeScope">
+                <label class="grid gap-1 text-sm font-medium">
+                    {{ page.props.labels.inbox_knowledge_scope_mode }}
+                    <select v-model="knowledgeScopeForm.mode" class="ui-input">
+                        <option value="automatic">{{ page.props.labels.inbox_knowledge_scope_automatic }}</option>
+                        <option value="manual">{{ page.props.labels.inbox_knowledge_scope_manual }}</option>
+                    </select>
+                </label>
+                <p class="text-xs text-muted">{{ page.props.labels['inbox_knowledge_scope_help_' + knowledgeScopeForm.mode] }}</p>
+                <fieldset class="grid gap-2">
+                    <legend class="mb-1 text-sm font-medium">{{ page.props.labels.collections }}</legend>
+                    <label v-for="collection in thread.knowledge_scope.available" :key="collection.id" class="flex items-start gap-2 text-sm">
+                        <input v-model="knowledgeScopeForm.collection_ids" type="checkbox" :value="collection.id" class="mt-1 accent-brand">
+                        <span class="wrap-anywhere">{{ collection.name }}</span>
+                    </label>
+                    <p v-if="!thread.knowledge_scope.available.length" class="text-xs text-muted">{{ page.props.labels.inbox_knowledge_scope_none }}</p>
+                </fieldset>
+                <p v-if="knowledgeScopeForm.hasErrors" role="alert" class="text-xs text-danger">{{ Object.values(knowledgeScopeForm.errors)[0] }}</p>
+            </form>
+            <template #footer>
+                <button type="button" class="ui-button" :disabled="knowledgeScopeForm.processing" @click="knowledgeScopeOpen = false">{{ page.props.labels.cancel }}</button>
+                <button type="submit" :form="formId + '-knowledge-scope'" class="ui-button ui-button-primary"
+                    :disabled="knowledgeScopeForm.processing || (knowledgeScopeForm.mode === 'manual' && !knowledgeScopeForm.collection_ids.length)">
+                    {{ page.props.labels.save }}
+                </button>
+            </template>
+        </SlideOver>
         <SlideOver v-if="broadcastOpen" :title="page.props.labels.broadcast_title" :close-label="page.props.labels.close" :busy="broadcastForm.processing" @close="broadcastOpen = false">
             <form :id="`${formId}-broadcast`" class="grid gap-3" @submit.prevent="sendBroadcast">
                 <p class="text-xs text-muted">{{ page.props.labels.broadcast_help }}</p>

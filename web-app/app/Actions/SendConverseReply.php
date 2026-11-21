@@ -106,11 +106,12 @@ class SendConverseReply
         });
     }
 
-    public function automatic(int $conversation, int $inboundId, string $operationId, string $body, bool $handoff, ?int $assetId = null, array $catalogScope = [], ?string $catalogAgent = null): bool
+    public function automatic(int $conversation, int $inboundId, string $operationId, string $body, bool $handoff, ?int $assetId = null, array $catalogScope = [], ?string $catalogAgent = null, ?array $knowledgeCollections = null): bool
     {
-        $claim = DB::transaction(function () use ($conversation, $inboundId, $operationId, $body, $assetId): ?int {
+        $claim = DB::transaction(function () use ($conversation, $inboundId, $operationId, $body, $assetId, $knowledgeCollections): ?int {
             $thread = $this->thread(null, $conversation);
             if (! $this->canReplyAutomatically($thread, $conversation, $inboundId)
+                || ! $this->knowledgeScopeAllows($thread, $knowledgeCollections)
                 || DB::table('cv_messages')->where('conversation_id', $conversation)->where('operation_id', $operationId)->exists()) {
                 return null;
             }
@@ -123,9 +124,10 @@ class SendConverseReply
             ]);
         });
 
-        return DB::transaction(function () use ($claim, $conversation, $inboundId, $body, $handoff, $operationId, $assetId, $catalogScope, $catalogAgent): bool {
+        return DB::transaction(function () use ($claim, $conversation, $inboundId, $body, $handoff, $operationId, $assetId, $catalogScope, $catalogAgent, $knowledgeCollections): bool {
             $thread = $this->thread(null, $conversation);
-            $eligible = $this->canReplyAutomatically($thread, $conversation, $inboundId);
+            $scopeAllowed = $this->knowledgeScopeAllows($thread, $knowledgeCollections);
+            $eligible = $scopeAllowed && $this->canReplyAutomatically($thread, $conversation, $inboundId);
             $status = 'failed';
             $externalId = $attachmentStatus = $attachmentId = null;
             $asset = null;
@@ -168,7 +170,7 @@ class SendConverseReply
 
             $latest = DB::table('cv_messages')->where('conversation_id', $conversation)->where('direction', 'in')
                 ->orderByDesc('occurred_at')->orderByDesc('id')->value('id');
-            if ($this->autoReplyEnabled((int) $thread->channel_account_id) && $thread->enabled && $thread->opted_out_at === null
+            if ($scopeAllowed && $this->autoReplyEnabled((int) $thread->channel_account_id) && $thread->enabled && $thread->opted_out_at === null
                 && $thread->mode === 'ai' && in_array($thread->status, ['open', 'pending'], true)
                 && (int) $latest === $inboundId && ($handoff || ($claim !== null && $status !== 'accepted'))) {
                 DB::table('cv_conversations')->where('id', $conversation)->update([
@@ -232,6 +234,12 @@ class SendConverseReply
             && $this->blockedReason($thread, $conversation, automatic: true) === null
             && (int) DB::table('cv_messages')->where('conversation_id', $conversation)->where('direction', 'in')
                 ->orderByDesc('occurred_at')->orderByDesc('id')->value('id') === $inboundId;
+    }
+
+    private function knowledgeScopeAllows(object $thread, ?array $collections): bool
+    {
+        return $collections === null || $thread->knowledge_scope_mode !== 'manual'
+            || array_diff($collections, json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR)) === [];
     }
 
     private function autoReplyEnabled(int $accountId): bool
@@ -326,7 +334,8 @@ class SendConverseReply
             ->join('cv_contacts as contact', 'contact.id', '=', 'identity.contact_id')
             ->join('cv_channel_accounts as account', 'account.id', '=', 'identity.channel_account_id')
             ->where('thread.id', $id)->where('account.is_demo', (bool) $user?->is_demo)
-            ->select('thread.mode', 'thread.status', 'account.enabled', 'account.is_demo', 'account.type', 'account.send_token',
+            ->select('thread.mode', 'thread.status', 'thread.knowledge_scope_mode', 'thread.knowledge_collection_ids',
+                'account.enabled', 'account.is_demo', 'account.type', 'account.send_token',
                 'account.id as channel_account_id', 'account.external_id as account_id', 'contact.opted_out_at')
             ->selectRaw('COALESCE(identity.whatsapp_reply_address, identity.external_id) AS recipient_id');
         $thread = ($lock ? $query->lockForUpdate() : $query)->first();

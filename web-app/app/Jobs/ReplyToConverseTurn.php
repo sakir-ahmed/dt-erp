@@ -45,7 +45,8 @@ class ReplyToConverseTurn implements ShouldQueue
             ->where('thread.mode', 'ai')->whereIn('thread.status', ['open', 'pending'])
             ->where('account.is_demo', false)->where('account.enabled', true)->whereNull('contact.opted_out_at')
             ->whereBetween('inbound.occurred_at', [now()->subHours(24), now()])
-            ->first(['thread.id', 'account.id as account_id', 'inbound.occurred_at', 'thread.memory', 'contact.language_preference', 'account.type as channel']);
+            ->first(['thread.id', 'account.id as account_id', 'inbound.occurred_at', 'thread.memory', 'contact.language_preference',
+                'account.type as channel', 'thread.knowledge_scope_mode', 'thread.knowledge_collection_ids']);
 
         if ($thread === null) {
             return;
@@ -71,6 +72,8 @@ class ReplyToConverseTurn implements ShouldQueue
             'memory' => json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR),
             'language_preference' => $thread->language_preference,
             'channel' => $thread->channel,
+            'knowledge_scope_mode' => $thread->knowledge_scope_mode,
+            'knowledge_collection_ids' => json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR),
         ]);
         $scope = $reply['scope'];
         foreach ($reply['source_ids'] as $source) {
@@ -81,13 +84,18 @@ class ReplyToConverseTurn implements ShouldQueue
         }
 
         $operationId = (string) Str::uuid();
-        $claimed = DB::transaction(function () use ($thread, $operationId, $reply, $scope, $tag, $history): bool {
-            $conversation = DB::table('cv_conversations')->where('id', $thread->id)->lockForUpdate()->first(['mode', 'status']);
+        $claimed = DB::transaction(function () use ($thread, $operationId, $reply, $scope, $tag, $history): ?bool {
+            $conversation = DB::table('cv_conversations')->where('id', $thread->id)->lockForUpdate()
+                ->first(['mode', 'status', 'knowledge_scope_mode', 'knowledge_collection_ids']);
             $latest = DB::table('cv_messages')->where('conversation_id', $thread->id)->where('direction', 'in')
                 ->orderByDesc('occurred_at')->orderByDesc('id')->value('id');
             if ($conversation?->mode !== 'ai' || ! in_array($conversation->status, ['open', 'pending'], true)
                 || (int) $latest !== $this->inboundMessageId) {
                 return false;
+            }
+            if ($conversation->knowledge_scope_mode !== $thread->knowledge_scope_mode
+                || $conversation->knowledge_collection_ids !== $thread->knowledge_collection_ids) {
+                return null;
             }
             $claimed = DB::table('cv_ai_turns')->insertOrIgnore([
                 'inbound_message_id' => $this->inboundMessageId, 'operation_id' => $operationId,
@@ -98,18 +106,33 @@ class ReplyToConverseTurn implements ShouldQueue
                 'fallback' => $reply['fallback'] ?? false,
             ]);
             if ($claimed) {
+                if ($conversation->knowledge_scope_mode === 'automatic') {
+                    $previous = json_decode($conversation->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR);
+                    $ids = array_values(array_unique([...$previous, ...$scope['connected_collection_ids']]));
+                    if ($ids !== $previous) {
+                        DB::table('cv_conversations')->where('id', $thread->id)->update([
+                            'knowledge_collection_ids' => json_encode($ids, JSON_THROW_ON_ERROR), 'updated_at' => now(),
+                        ]);
+                    }
+                }
                 $tag((int) $thread->id, $history->last()->body, $scope);
             }
 
             return $claimed > 0;
         }, attempts: 3);
+        if ($claimed === null) {
+            $this->release(1);
+
+            return;
+        }
         if (! $claimed) {
             return;
         }
         foreach ($reply['messages'] ?? [$reply['body']] as $index => $body) {
             $partId = $index === 0 ? $operationId : Uuid::uuid5($operationId, (string) $index)->toString();
             if (! $send->automatic((int) $thread->id, $this->inboundMessageId, $partId, $body, $reply['decision'] === 'handoff',
-                $index === 0 ? ($reply['asset_id'] ?? null) : null, $reply['asset_collections'] ?? [], $reply['asset_agent'] ?? null)) {
+                $index === 0 ? ($reply['asset_id'] ?? null) : null, $reply['asset_collections'] ?? [], $reply['asset_agent'] ?? null,
+                $scope['collection_ids'])) {
                 break;
             }
         }

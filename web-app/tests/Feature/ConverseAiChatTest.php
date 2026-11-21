@@ -214,3 +214,40 @@ it('ignores an out-of-order webhook when a newer customer message already exists
     $this->assertDatabaseCount('cv_ai_turns', 1);
     $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $newer]);
 });
+
+it('remembers several automatically linked collections while answering the current topic', function () {
+    [$account, $restora] = aiChatFixture('whatsapp');
+    DB::table('cv_knowledge_collections')->where('id', $restora)->update(['name' => 'DT Restora']);
+    $erp = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'DT ERP', 'enabled' => true]);
+    $medix = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'DT Medix', 'enabled' => true]);
+    config(['converse.ai.channels' => [$account => ['enabled' => true, 'agent' => 'sales', 'collections' => [$restora, $erp, $medix]]]]);
+    $owner = User::factory()->create();
+    foreach ([$restora => 'restora@example.invalid', $erp => 'erp@example.invalid'] as $collection => $address) {
+        DB::table('cv_knowledge_corrections')->insert(['owner_id' => $owner->id, 'collection_id' => $collection,
+            'question' => 'sales email', 'answer' => $address, 'enabled' => true]);
+    }
+    Http::fake(['https://graph.facebook.com/*/101/messages' => Http::sequence()
+        ->push(['messages' => [['id' => 'wamid.scope-restora']]])
+        ->push(['messages' => [['id' => 'wamid.scope-erp']]])
+        ->push(['messages' => [['id' => 'wamid.scope-handoff']]])]);
+
+    $first = aiChatInbound($account, 'first-scope', 'DT-Restora sales email please');
+    dispatch_sync(new ReplyToConverseTurn($first));
+    $second = aiChatInbound($account, 'second-scope', 'And the DT ERP sales email?');
+    dispatch_sync(new ReplyToConverseTurn($second));
+    $thread = DB::table('cv_messages')->where('id', $first)->value('conversation_id');
+    $this->assertDatabaseHas('cv_conversations', ['id' => $thread, 'knowledge_scope_mode' => 'automatic',
+        'knowledge_collection_ids' => json_encode([$restora, $erp])]);
+    expect(DB::table('cv_messages')->where('direction', 'out')->orderBy('id')->pluck('body')->all())
+        ->toBe(['restora@example.invalid', 'erp@example.invalid']);
+    $active = json_decode(DB::table('cv_ai_turns')->where('inbound_message_id', $second)->value('knowledge_scope'), true);
+    expect($active['collection_ids'])->toBe([$erp])->and($active['connected_collection_ids'])->toBe([$restora, $erp]);
+
+    DB::table('cv_conversations')->where('id', $thread)->update(['knowledge_scope_mode' => 'manual',
+        'knowledge_collection_ids' => json_encode([$restora])]);
+    $third = aiChatInbound($account, 'third-scope', 'DT Medix sales email please');
+    dispatch_sync(new ReplyToConverseTurn($third));
+    $this->assertDatabaseHas('cv_conversations', ['id' => $thread, 'knowledge_scope_mode' => 'manual',
+        'knowledge_collection_ids' => json_encode([$restora]), 'mode' => 'human']);
+    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $third, 'decision' => 'handoff']);
+});

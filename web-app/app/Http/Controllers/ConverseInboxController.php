@@ -9,6 +9,7 @@ use App\Actions\GetMessengerSenderProfile;
 use App\Actions\RecordConverseAudit;
 use App\Actions\RecordConverseNotification;
 use App\Actions\RecordWhatsAppDeliveryStatus;
+use App\Actions\ResolveConverseKnowledgeScope;
 use App\Actions\SendConverseReply;
 use App\Actions\WhatsAppRecipient;
 use App\Enums\WorkspacePermission;
@@ -19,17 +20,19 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ConverseInboxController extends Controller
 {
-    public function __construct(private ConverseAiSettings $aiSettings, private ConverseOutboundAssets $assets) {}
+    public function __construct(private ConverseAiSettings $aiSettings, private ConverseOutboundAssets $assets, private ResolveConverseKnowledgeScope $knowledgeScope) {}
 
     private const array CHANNELS = ['messenger', 'whatsapp'];
 
@@ -48,7 +51,9 @@ class ConverseInboxController extends Controller
         $tags = $this->tagFilter($request);
         $scope = $this->scope($request);
 
-        $thread = $conversation === null ? null : (clone $scope)->where('conversations.id', $conversation)->addSelect('accounts.id as channel_account_id', 'conversations.memory', 'contacts.language_preference')->first();
+        $thread = $conversation === null ? null : (clone $scope)->where('conversations.id', $conversation)
+            ->addSelect('accounts.id as channel_account_id', 'conversations.memory', 'contacts.language_preference',
+                'conversations.knowledge_scope_mode', 'conversations.knowledge_collection_ids')->first();
         abort_if($conversation !== null && $thread === null, 404);
 
         $conversations = (clone $scope)
@@ -109,8 +114,15 @@ class ConverseInboxController extends Controller
         }
         $channelId = $thread?->channel_account_id;
         if ($thread) {
+            $available = $this->knowledgeCollectionsFor((int) $channelId, $demo);
+            $connected = json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR);
+            $thread->knowledge_scope = [
+                'mode' => $thread->knowledge_scope_mode,
+                'collections' => $available->only($connected)->values()->all(),
+                'available' => $canManage ? $available->values()->all() : [],
+            ];
             $thread->memory = json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR);
-            unset($thread->channel_account_id);
+            unset($thread->channel_account_id, $thread->knowledge_scope_mode, $thread->knowledge_collection_ids);
         }
 
         return Inertia::render('Converse/Inbox', [
@@ -143,7 +155,8 @@ class ConverseInboxController extends Controller
     public function draft(Request $request, int $conversation, ComposeConverseReply $compose): JsonResponse
     {
         $thread = $this->scope($request)->where('conversations.id', $conversation)
-            ->addSelect('accounts.id as channel_account_id', 'conversations.memory', 'contacts.language_preference')->first();
+            ->addSelect('accounts.id as channel_account_id', 'conversations.memory', 'contacts.language_preference',
+                'conversations.knowledge_scope_mode', 'conversations.knowledge_collection_ids')->first();
         abort_if($thread === null, 404);
 
         $settings = $this->aiSettings->channel((int) $thread->channel_account_id);
@@ -158,10 +171,55 @@ class ConverseInboxController extends Controller
             'memory' => json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR),
             'language_preference' => $thread->language_preference,
             'channel' => $thread->channel,
+            'knowledge_scope_mode' => $thread->knowledge_scope_mode,
+            'knowledge_collection_ids' => json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR),
         ]);
         unset($draft['asset_collections'], $draft['asset_agent']);
 
         return response()->json(['draft' => $draft]);
+    }
+
+    public function updateKnowledgeScope(Request $request, int $conversation, RecordConverseAudit $audit): RedirectResponse
+    {
+        $data = $request->validate([
+            'mode' => ['required', Rule::in(['automatic', 'manual'])],
+            'collection_ids' => ['present', 'required_if:mode,manual', 'array', 'list', 'max:25'],
+            'collection_ids.*' => ['required', 'distinct', 'integer', 'min:1'],
+        ]);
+        DB::transaction(function () use ($request, $conversation, $audit, $data): void {
+            $thread = $this->scope($request)->where('conversations.id', $conversation)
+                ->addSelect('accounts.id as channel_account_id', 'conversations.knowledge_scope_mode', 'conversations.knowledge_collection_ids')
+                ->lockForUpdate()->firstOrFail();
+            $ids = array_map(intval(...), $data['collection_ids']);
+            $available = $this->knowledgeCollectionsFor($thread->channel_account_id, (bool) $request->user()->is_demo);
+            if (array_diff($ids, $available->keys()->all()) !== []) {
+                throw ValidationException::withMessages(['collection_ids' => __('workspace.inbox_knowledge_scope_unavailable')]);
+            }
+            $previous = ['mode' => $thread->knowledge_scope_mode,
+                'collection_ids' => json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR)];
+            $next = ['mode' => $data['mode'], 'collection_ids' => $ids];
+            if ($previous !== $next) {
+                DB::table('cv_conversations')->where('id', $conversation)->update([
+                    'knowledge_scope_mode' => $next['mode'], 'knowledge_collection_ids' => json_encode($ids, JSON_THROW_ON_ERROR),
+                    'updated_at' => now(),
+                ]);
+                $audit($request->user()->id, 'conversation.knowledge_scope_updated', 'conversation', $conversation, ['from' => $previous, 'to' => $next]);
+            }
+        }, attempts: 3);
+        Inertia::flash('success', __('workspace.inbox_knowledge_scope_saved'));
+
+        return back(fallback: route('converse.inbox', $conversation));
+    }
+
+    private function knowledgeCollectionsFor(int $account, bool $demo): Collection
+    {
+        $settings = $this->aiSettings->get();
+        $channel = $settings['channels'][$account] ?? [];
+        $ids = $channel['collections'] ?? [];
+        $agent = $settings['agents'][$channel['agent'] ?? ''] ?? [];
+
+        return $this->knowledgeScope->availableCollections(array_intersect($ids, $agent['collections'] ?? $ids), $demo)
+            ->map(fn (object $collection): array => ['id' => $collection->id, 'name' => $collection->name]);
     }
 
     private function latestAiTrace(int $conversation): ?object

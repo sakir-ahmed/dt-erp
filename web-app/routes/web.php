@@ -58,6 +58,11 @@ Route::middleware('auth')->group(function () {
         ->whereNumber('conversation')
         ->can(WorkspacePermission::ManageConverseInbox->value)
         ->name('converse.inbox.tags.sync');
+    Route::put('/converse/inbox/{conversation}/knowledge-scope', [ConverseInboxController::class, 'updateKnowledgeScope'])
+        ->whereNumber('conversation')
+        ->can(WorkspacePermission::ViewConverseInbox->value)
+        ->can(WorkspacePermission::ManageConverseInbox->value)
+        ->name('converse.inbox.knowledge-scope.update');
     Route::post('/converse/inbox/broadcast', [ConverseInboxController::class, 'broadcast'])
         ->can(WorkspacePermission::ManageConverseInbox->value)
         ->middleware('throttle:5,1')

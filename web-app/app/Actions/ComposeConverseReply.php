@@ -27,13 +27,16 @@ class ComposeConverseReply
         $agent = $configuration['agents'][$agentName] ?? null;
         $allowed = $settings['collections'] ?? [];
         $sandbox = $settings['sandbox'] ?? false;
-        $scope = ($this->knowledgeScope)($history, array_intersect($allowed, $agent['collections'] ?? $allowed), $sandbox);
+        $manualScope = ($settings['knowledge_scope_mode'] ?? 'automatic') === 'manual';
+        $scope = ($this->knowledgeScope)($history, array_intersect($allowed, $agent['collections'] ?? $allowed), $sandbox,
+            $settings['knowledge_collection_ids'] ?? [], $manualScope);
         $collections = $scope['collection_ids'];
         $subjectId = $scope['restrict_subject'] ? $scope['subject_id'] : null;
         $turn = ['language' => $language, 'intent' => $intent, 'decision' => 'handoff', 'body' => $this->handoff($language),
             'source_ids' => [], 'scope' => $scope];
         if ($intent === 'human_request'
             || ($intent === 'sales_request' && preg_match('/\b(quote|purchase|buy)\b|কিনতে/ui', $latest))
+            || ($manualScope && $collections === [])
             || preg_match('/\b(integrat\w*|connects? (to|with))\b|ইন্টিগ্রেশন|সাথে যুক্ত|সঙ্গে যুক্ত/ui', $latest)) {
             return $turn;
         }
