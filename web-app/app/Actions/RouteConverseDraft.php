@@ -7,6 +7,18 @@ use Illuminate\Support\Facades\Http;
 
 class RouteConverseDraft
 {
+    private const array REPLY_SELECTION_SCHEMA = [
+        'type' => 'object',
+        'properties' => [
+            'source_ids' => ['type' => 'array', 'items' => ['type' => 'integer'], 'maxItems' => 2],
+            'asset_id' => ['type' => ['integer', 'null']],
+            'ask_follow_up' => ['type' => 'boolean'],
+            'confidence' => ['type' => 'number', 'minimum' => 0, 'maximum' => 1],
+        ],
+        'required' => ['confidence'],
+        'additionalProperties' => false,
+    ];
+
     public function __construct(private ConverseAiSettings $configuration) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool}|null */
@@ -101,8 +113,8 @@ class RouteConverseDraft
                 'model' => $model,
                 'stream' => false,
                 'keep_alive' => '20m',
-                ...($structured ? ['format' => 'json'] : []),
-                'options' => ['num_ctx' => 8192, 'num_predict' => 250, ...($structured ? ['temperature' => 0] : [])],
+                ...($structured ? ['format' => self::REPLY_SELECTION_SCHEMA] : []),
+                'options' => ['num_ctx' => 4096, 'num_predict' => $structured ? 72 : 128, ...($structured ? ['temperature' => 0] : [])],
                 'messages' => [
                     ['role' => 'system', 'content' => $instructions],
                     ['role' => 'user', 'content' => $input],
