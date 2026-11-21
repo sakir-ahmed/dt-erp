@@ -72,7 +72,7 @@ return [
     'ai_allow_cloud_samples' => 'Enable cloud providers',
     'ai_cloud_connected' => 'Cloud providers with an API key',
     'ai_cloud_none' => 'None configured',
-    'ai_cloud_routing_help' => 'Live chats try Ollama first. Set cloud.live to true to allow live fallback. The cloud.models list requires provider, model and tier values. Free models run first, followed by economy models. Advanced models are reserved for complex questions.',
+    'ai_cloud_routing_help' => 'Set cloud.live to true to allow cloud models in live chats. Automatic routing tries Ollama, then free and economy tiers. Complex questions can also use the advanced tier. A matching workflow uses its own model order.',
     'ai_test_advanced' => 'Include the advanced fallback tier',
     'ai_channel_setup' => 'Channel AI setup',
     'ai_select_channel' => 'Select a channel',

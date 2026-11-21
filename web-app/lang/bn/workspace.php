@@ -72,7 +72,7 @@ return [
     'ai_allow_cloud_samples' => 'Cloud provider চালু করুন',
     'ai_cloud_connected' => 'যেসব cloud provider-এর API key সেট করা আছে',
     'ai_cloud_none' => 'কোনোটি সেট করা নেই',
-    'ai_cloud_routing_help' => 'লাইভ চ্যাটে প্রথমে Ollama চেষ্টা করে। লাইভ fallback চালাতে cloud.live true করুন। cloud.models তালিকায় provider, model ও tier দিন। প্রথমে free, এরপর economy মডেল চলবে। জটিল প্রশ্নে advanced মডেলও চেষ্টা করবে।',
+    'ai_cloud_routing_help' => 'লাইভ চ্যাটে cloud মডেল ব্যবহারের জন্য cloud.live true করুন। স্বয়ংক্রিয় রাউটিংয়ে প্রথমে Ollama, তারপর free ও economy tier চেষ্টা করে। জটিল প্রশ্নে advanced tier-ও চলে। মিলে যাওয়া ওয়ার্কফ্লো তার নিজস্ব মডেল ক্রম অনুসরণ করে।',
     'ai_test_advanced' => 'পরীক্ষায় advanced fallback যোগ করুন',
     'ai_channel_setup' => 'চ্যানেলের এআই সেটআপ',
     'ai_select_channel' => 'একটি চ্যানেল নির্বাচন করুন',
