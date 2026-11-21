@@ -12,6 +12,7 @@ use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ProcessConverseWebhook implements ShouldQueue
 {
@@ -20,6 +21,14 @@ class ProcessConverseWebhook implements ShouldQueue
     public int $tries = 5;
 
     public function __construct(public int $eventId) {}
+
+    public function failed(\Throwable $exception): void
+    {
+        Log::channel('converse')->error('webhook job failed after retries', [
+            'event_id' => $this->eventId,
+            'exception' => mb_substr($exception->getMessage(), 0, 500),
+        ]);
+    }
 
     public function handle(RecordConverseInboundMessage $record, RecordWhatsAppDeliveryStatus $delivery, WhatsAppContactNames $contactNames, SaveConverseInboundAttachment $attachments): void
     {

@@ -7,6 +7,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -30,11 +31,19 @@ class SaveConverseInboundAttachment
             ? $this->downloadWhatsApp($account, $locator, $sha256)
             : $this->downloadMessenger($locator);
         if ($bytes === null) {
+            Log::channel('converse')->info('inbound attachment download rejected', [
+                'message_id' => $message, 'channel' => $channel, 'locator' => mb_substr($locator, 0, 100),
+            ]);
+
             return null;
         }
 
         $mime = (new \finfo(FILEINFO_MIME_TYPE))->buffer($bytes);
         if (! is_string($mime) || ! isset(self::TYPES[$mime]) || strlen($bytes) > self::TYPES[$mime][1]) {
+            Log::channel('converse')->info('inbound attachment unsupported or too large', [
+                'message_id' => $message, 'channel' => $channel, 'mime' => $mime, 'bytes' => strlen($bytes),
+            ]);
+
             return null;
         }
 

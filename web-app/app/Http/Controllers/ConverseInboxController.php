@@ -66,7 +66,8 @@ class ConverseInboxController extends Controller
             ->where('message.conversation_id', $thread->id)
             ->orderByDesc('message.occurred_at')->orderByDesc('message.id')
             ->select('message.id', 'message.direction', 'message.sender_type', 'message.body', 'message.occurred_at',
-                'message.delivery_status', 'message.attachment_status', 'asset.name as attachment_name')
+                'message.delivery_status', 'message.attachment_status', 'asset.name as attachment_name',
+                'asset.mime as attachment_mime', 'asset.bytes as attachment_bytes')
             ->simplePaginate(50, pageName: 'thread_page')->withQueryString();
         foreach ($messages?->items() ?? [] as $row) {
             $row->occurred_at = Carbon::parse($row->occurred_at)->toISOString();

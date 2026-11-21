@@ -10,6 +10,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -307,18 +308,38 @@ class SendConverseReply
                 'biz_opaque_callback_data' => $operationId,
             ]
             : ['messaging_type' => 'RESPONSE', 'recipient' => ['id' => $thread->recipient_id]];
-        $post = function (array $payload) use ($request, $base, $whatsapp): array {
+        $post = function (array $payload) use ($request, $base, $whatsapp, $thread): array {
             try {
                 $response = $request(8)->asJson()->post($base.'/messages', $payload);
             } catch (ConnectionException) {
+                Log::channel('converse')->warning('send network failure', [
+                    'channel' => $thread->type, 'account_id' => $thread->account_id,
+                ]);
+
                 return ['unknown', null];
             }
             if ($response->clientError()) {
+                Log::channel('converse')->warning('send rejected by provider', [
+                    'channel' => $thread->type, 'account_id' => $thread->account_id,
+                    'status' => $response->status(),
+                    'error' => $response->json('error.message'),
+                    'code' => $response->json('error.code'),
+                    'body' => mb_substr((string) $response->body(), 0, 500),
+                ]);
+
                 return ['failed', null];
             }
             $id = $response->successful() ? $response->json($whatsapp ? 'messages.0.id' : 'message_id') : null;
+            if ($id === null || (is_string($id) && ($id === '' || strlen($id) > 255))) {
+                Log::channel('converse')->warning('send outcome unknown', [
+                    'channel' => $thread->type, 'account_id' => $thread->account_id,
+                    'status' => $response->status(),
+                    'body' => mb_substr((string) $response->body(), 0, 500),
+                ]);
+                $id = null;
+            }
 
-            return is_string($id) && $id !== '' && strlen($id) <= 255 ? ['accepted', $id] : ['unknown', null];
+            return is_string($id) && $id !== '' ? ['accepted', $id] : ['unknown', null];
         };
 
         $mediaId = $asset ? $this->media->upload($request(20), $base, $whatsapp, $asset) : null;

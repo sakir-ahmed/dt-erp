@@ -2,6 +2,8 @@ export const converseNotificationCues = {
     ai_inbound: { label: 'converse_notice_ai_inbound', notes: [440], spacing: 0.15, duration: 0.16, volume: 0.07 },
     ai_reply: { label: 'converse_notice_ai_reply', notes: [587, 784], spacing: 0.15, duration: 0.17, volume: 0.08 },
     human_handoff: { label: 'converse_notice_human_handoff', notes: [880, 587, 988], spacing: 0.19, duration: 0.24, volume: 0.15 },
+    message_sent: { notes: [560], spacing: 0.12, duration: 0.09, volume: 0.04 },
+    message_received: { notes: [660, 880], spacing: 0.12, duration: 0.11, volume: 0.06 },
 };
 
 export const converseEventCues = {
@@ -54,4 +56,27 @@ export function scheduleConverseSound(context, type, start) {
     }
 
     return start + (notes.length - 1) * spacing + duration + 0.16;
+}
+
+const preferenceKey = 'dt-erp-converse-notification-sounds';
+let cueContext = null;
+
+/**
+ * Play a one-off thread cue (message sent/received) outside the notification
+ * stream. Honors the same sound preference as the notification bell and
+ * degrades silently when audio is unavailable.
+ */
+export async function playConverseCue(type) {
+    if (!Object.hasOwn(converseNotificationCues, type)) return;
+    try {
+        if (localStorage.getItem(preferenceKey) !== '1') return;
+        if (!window.AudioContext && !window.webkitAudioContext) return;
+        cueContext ??= new (window.AudioContext || window.webkitAudioContext)();
+        if (cueContext.state !== 'running') await cueContext.resume();
+        if (cueContext.state === 'running') {
+            scheduleConverseSound(cueContext, type, cueContext.currentTime + 0.01);
+        }
+    } catch {
+        // The visual thread keeps working when audio is unavailable.
+    }
 }

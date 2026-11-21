@@ -58,6 +58,16 @@ return [
             'ignore_exceptions' => false,
         ],
 
+        // Provider messaging operations: rejected sends, media failures,
+        // inbound attachment problems and exhausted webhook jobs.
+        'converse' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/converse.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'max_files' => env('LOG_CONVERSE_DAYS', 30),
+            'replace_placeholders' => true,
+        ],
+
         'single' => [
             'driver' => 'single',
             'path' => storage_path('logs/laravel.log'),

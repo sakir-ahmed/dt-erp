@@ -24,3 +24,13 @@ export function formatDhakaDateTime(timestamp, locale) {
         timeZone: 'Asia/Dhaka',
     }).format(new Date(timestamp));
 }
+
+export function formatBytes(bytes, locale) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '';
+    const unit = bytes >= 1_048_576 ? 'megabyte' : bytes >= 1024 ? 'kilobyte' : 'byte';
+    return new Intl.NumberFormat(numberLocale(locale), {
+        style: 'unit',
+        unit,
+        maximumFractionDigits: 1,
+    }).format(bytes >= 1_048_576 ? bytes / 1_048_576 : bytes >= 1024 ? bytes / 1024 : bytes);
+}

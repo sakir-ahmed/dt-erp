@@ -2,6 +2,7 @@
 import { Head, Link, useForm, usePage } from '@inertiajs/vue3';
 import { computed, nextTick, ref, useId } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import ChannelBrandIcon from '../../components/ChannelBrandIcon.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
@@ -67,9 +68,12 @@ function save() {
             <ul v-if="channels.data.length" class="divide-y divide-line">
                 <li v-for="channel in channels.data" :key="channel.id">
                     <button type="button" class="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2 text-start hover:bg-page" @click="edit(channel)">
-                        <span class="min-w-0 flex-1">
-                            <span class="block truncate text-sm font-semibold">{{ channel.name }}</span>
-                            <span class="block truncate text-xs text-muted">{{ page.props.labels[channel.type] }} · {{ channel.external_id }}</span>
+                        <span class="flex min-w-0 flex-1 items-center gap-2">
+                            <ChannelBrandIcon :channel="channel.type" class="h-5 w-5 shrink-0" :title="page.props.labels[channel.type]" />
+                            <span class="min-w-0">
+                                <span class="block truncate text-sm font-semibold">{{ channel.name }}</span>
+                                <span class="block truncate text-xs text-muted">{{ page.props.labels[channel.type] }} · {{ channel.external_id }}</span>
+                            </span>
                         </span>
                         <span class="rounded-full px-2 py-0.5 text-xs" :class="channel.enabled ? 'bg-success/10 text-success' : 'bg-page text-muted'">
                             {{ page.props.labels[channel.enabled ? 'enabled' : 'disabled'] }}

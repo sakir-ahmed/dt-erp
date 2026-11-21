@@ -1,13 +1,15 @@
 <script setup>
 import { Head, Link, router, useForm, useHttp, usePage, usePoll } from '@inertiajs/vue3';
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppIcon from '../../components/AppIcon.vue';
+import ChannelBrandIcon from '../../components/ChannelBrandIcon.vue';
 import ConverseContactAvatar from '../../components/ConverseContactAvatar.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SearchBar from '../../components/ui-kit/SearchBar.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
-import { formatDhakaDateTime } from '../../lib/format';
+import { playConverseCue } from '../../lib/converseNotificationSounds';
+import { formatBytes, formatDhakaDateTime } from '../../lib/format';
 
 const props = defineProps({
     conversations: { type: Object, required: true },
@@ -86,15 +88,84 @@ async function draftReply() {
         draftUnavailable.value = props.thread?.id === threadId;
     }
 }
-const poll = usePoll(5000, { only: ['conversations', 'thread', 'messages', 'replyBlockedReason', 'aiTrace'] }, { autoStart: false });
+const poll = usePoll(3000, { only: ['conversations', 'thread', 'messages', 'replyBlockedReason', 'aiTrace'] }, { autoStart: false });
 
-watch([searching, () => state.processing, () => reply.processing, () => retryForm.processing], (busy) => {
-    if (busy.some(Boolean)) {
-        poll.stop();
-    } else {
-        poll.start();
-    }
+function syncPoll(busy = [searching.value, state.processing, reply.processing, retryForm.processing]) {
+    if (busy.some(Boolean) || document.hidden) poll.stop();
+    else poll.start();
+}
+
+watch([searching, () => state.processing, () => reply.processing, () => retryForm.processing], () => syncPoll(), { immediate: true });
+
+function onVisibilityChange() {
+    syncPoll();
+}
+onMounted(() => document.addEventListener('visibilitychange', onVisibilityChange));
+onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+// Chat-style thread scrolling: stay pinned to the newest message unless the
+// reader has scrolled up into history, and load older pages on demand.
+const threadScroll = ref(null);
+const pinnedToBottom = ref(true);
+const loadingOlder = ref(false);
+let restoreHeight = 0;
+let lastInboundId = 0;
+
+function threadMessages() {
+    return props.messages?.data ?? [];
+}
+
+function latestInboundId() {
+    const inbound = threadMessages().filter((message) => message.direction === 'in');
+    return inbound.length ? inbound[0].id : 0;
+}
+
+function scrollToBottom() {
+    const element = threadScroll.value;
+    if (element) element.scrollTop = element.scrollHeight;
+}
+
+function onThreadScroll() {
+    const element = threadScroll.value;
+    if (!element) return;
+    pinnedToBottom.value = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
+    if (element.scrollTop <= 48 && !loadingOlder.value) loadOlder();
+}
+
+function loadOlder() {
+    const older = props.messages?.next_page_url;
+    if (!older || loadingOlder.value) return;
+    loadingOlder.value = true;
+    restoreHeight = threadScroll.value?.scrollHeight ?? 0;
+    router.visit(older, {
+        only: ['messages'],
+        preserveScroll: true,
+        preserveState: true,
+        onFinish: () => { loadingOlder.value = false; },
+    });
+}
+
+watch(() => props.thread?.id, () => {
+    lastInboundId = latestInboundId();
+    pinnedToBottom.value = true;
+    nextTick(scrollToBottom);
 }, { immediate: true });
+
+watch(() => props.messages, () => {
+    const element = threadScroll.value;
+    if (element && restoreHeight > 0) {
+        // Keep the reader anchored while older history is prepended.
+        element.scrollTop += element.scrollHeight - restoreHeight;
+        restoreHeight = 0;
+        return;
+    }
+    const fresh = latestInboundId();
+    if (fresh > lastInboundId) {
+        if (lastInboundId > 0) void playConverseCue('message_received');
+        lastInboundId = fresh;
+    }
+    if (pinnedToBottom.value) nextTick(scrollToBottom);
+});
 
 watch([() => props.thread?.id, () => props.thread?.mode, () => props.thread?.status], ([id, mode, status], previous) => {
     if (id !== previous[0] || !state.isDirty || state.processing) {
@@ -113,7 +184,12 @@ function sendReply() {
     reply.operation_id ||= crypto.randomUUID();
     reply.post(`/converse/inbox/${props.thread.id}/reply`, {
         preserveScroll: true,
-        onSuccess: () => reply.reset(),
+        onSuccess: () => {
+            reply.reset();
+            void playConverseCue('message_sent');
+            pinnedToBottom.value = true;
+            nextTick(scrollToBottom);
+        },
     });
 }
 
@@ -146,6 +222,14 @@ function contactLabel(contact) {
     return contact.name?.trim() || (contact.contact_suffix
         ? `${channel} •••• ${contact.contact_suffix}`
         : `${channel} ${page.props.labels.converse_contact} #${contact.id}`);
+}
+
+function isImageAttachment(message) {
+    return typeof message.attachment_mime === 'string' && message.attachment_mime.startsWith('image/');
+}
+
+function isPdfAttachment(message) {
+    return message.attachment_mime === 'application/pdf';
 }
 
 function threadUrl(id) {
@@ -185,7 +269,10 @@ function threadUrl(id) {
                             <span class="min-w-0 flex-1">
                                 <span class="flex flex-wrap items-center justify-between gap-x-2">
                                     <span class="min-w-0 wrap-anywhere font-semibold">{{ contactLabel(row) }}</span>
-                                    <span class="rounded-md bg-page px-2 text-xs leading-5 text-muted">{{ page.props.labels[row.channel] ?? row.channel }}</span>
+                                    <span class="flex items-center gap-1">
+                                        <ChannelBrandIcon :channel="row.channel" class="h-4 w-4 shrink-0" :title="page.props.labels[row.channel] ?? row.channel" />
+                                        <span class="sr-only">{{ page.props.labels[row.channel] ?? row.channel }}</span>
+                                    </span>
                                 </span>
                                 <span class="mt-1 block text-xs text-muted">{{ row.account }} · {{ formatDhakaDateTime(row.last_message_at, page.props.locale) }}</span>
                             </span>
@@ -204,7 +291,10 @@ function threadUrl(id) {
                         <ConverseContactAvatar :name="thread.name" :photo="thread.sender_photo" />
                         <div class="min-w-0">
                             <h2 class="wrap-anywhere font-semibold">{{ contactLabel(thread) }}</h2>
-                            <p class="text-xs text-muted">{{ thread.account }} · {{ page.props.labels[thread.channel] ?? thread.channel }}</p>
+                            <p class="flex items-center gap-1 text-xs text-muted">
+                                <ChannelBrandIcon :channel="thread.channel" class="h-3.5 w-3.5 shrink-0" />
+                                {{ thread.account }} · {{ page.props.labels[thread.channel] ?? thread.channel }}
+                            </p>
                         </div>
                     </div>
                     <p v-if="!canManageInbox" class="mt-1 text-xs text-muted">{{ page.props.labels[`status_${thread.status}`] }} · {{ page.props.labels[`mode_${thread.mode}`] }}</p>
@@ -240,28 +330,40 @@ function threadUrl(id) {
                     </button>
                     <p v-if="state.hasErrors" role="alert" class="w-full text-xs text-danger">{{ Object.values(state.errors)[0] }}</p>
                 </form>
-                <ol class="space-y-2 p-3">
-                    <li v-for="message in [...messages.data].reverse()" :key="message.id" class="w-fit max-w-[90%] rounded-lg bg-page p-2.5"
-                        :class="{ 'ms-auto bg-selected': message.direction === 'out' }">
-                        <p v-if="message.body" class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ message.body }}</p>
-                        <a v-if="message.attachment_name" class="block wrap-anywhere text-[13px] text-brand underline"
-                            :href="`/converse/inbox/${thread.id}/attachments/${message.id}`">
-                            {{ message.attachment_name }}
-                        </a>
-                        <p class="mt-1 text-xs text-muted">
-                            {{ formatDhakaDateTime(message.occurred_at, page.props.locale) }}
-                            <span v-if="message.delivery_status"> · {{ page.props.labels[`reply_${message.delivery_status}`] }}</span>
-                            <span v-if="message.delivery_status === 'partial' && message.attachment_status"> · {{ page.props.labels[`reply_${message.attachment_status}`] }}</span>
-                            <button v-if="canManageInbox && !replyBlockedReason && message.delivery_status === 'partial' && message.attachment_status === 'failed'"
-                                type="button" class="ms-2 text-brand underline" :disabled="retryForm.processing" @click="retryAttachment(message.id)">
-                                {{ page.props.labels.converse_retry_file }}
-                            </button>
-                        </p>
-                    </li>
-                </ol>
-                <div v-if="messages.prev_page_url || messages.next_page_url" class="flex justify-end gap-2 border-t border-line p-3">
-                    <Link v-if="messages.prev_page_url" :href="messages.prev_page_url" class="ui-button">{{ page.props.labels.newer_messages }}</Link>
-                    <Link v-if="messages.next_page_url" :href="messages.next_page_url" class="ui-button">{{ page.props.labels.older_messages }}</Link>
+                <div ref="threadScroll" class="max-h-[26rem] overflow-y-auto overscroll-contain lg:max-h-[32rem]" @scroll.passive="onThreadScroll">
+                    <div v-if="messages.next_page_url || messages.prev_page_url" class="flex justify-center gap-2 p-2">
+                        <button v-if="messages.next_page_url" type="button" class="ui-button text-xs" :disabled="loadingOlder" @click="loadOlder">
+                            {{ page.props.labels.older_messages }}
+                        </button>
+                        <Link v-if="messages.prev_page_url" :href="messages.prev_page_url" class="ui-button text-xs">{{ page.props.labels.newer_messages }}</Link>
+                    </div>
+                    <ol class="space-y-2 p-3">
+                        <li v-for="message in [...messages.data].reverse()" :key="message.id" class="w-fit max-w-[90%] rounded-lg bg-page p-2.5"
+                            :class="{ 'ms-auto bg-selected': message.direction === 'out' }">
+                            <p v-if="message.body" class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ message.body }}</p>
+                            <a v-if="message.attachment_name" class="mt-1 block"
+                                :href="`/converse/inbox/${thread.id}/attachments/${message.id}`">
+                                <img v-if="isImageAttachment(message)" class="max-h-64 max-w-full rounded-md border border-line object-contain"
+                                    :src="`/converse/inbox/${thread.id}/attachments/${message.id}`" :alt="message.attachment_name" loading="lazy">
+                                <span v-else class="flex items-center gap-2 rounded-md border border-line bg-surface p-2">
+                                    <AppIcon :name="isPdfAttachment(message) ? 'file-pdf' : 'file'" class="shrink-0 text-brand" />
+                                    <span class="min-w-0">
+                                        <span class="block truncate text-[13px] font-medium">{{ message.attachment_name }}</span>
+                                        <span v-if="message.attachment_bytes" class="text-xs text-muted">{{ formatBytes(message.attachment_bytes, page.props.locale) }}</span>
+                                    </span>
+                                </span>
+                            </a>
+                            <p class="mt-1 text-xs text-muted">
+                                {{ formatDhakaDateTime(message.occurred_at, page.props.locale) }}
+                                <span v-if="message.delivery_status"> · {{ page.props.labels[`reply_${message.delivery_status}`] }}</span>
+                                <span v-if="message.delivery_status === 'partial' && message.attachment_status"> · {{ page.props.labels[`reply_${message.attachment_status}`] }}</span>
+                                <button v-if="canManageInbox && !replyBlockedReason && message.delivery_status === 'partial' && message.attachment_status === 'failed'"
+                                    type="button" class="ms-2 text-brand underline" :disabled="retryForm.processing" @click="retryAttachment(message.id)">
+                                    {{ page.props.labels.converse_retry_file }}
+                                </button>
+                            </p>
+                        </li>
+                    </ol>
                 </div>
                 <form v-if="canManageInbox" class="grid gap-2 border-t border-line p-3" @submit.prevent="sendReply">
                     <p v-if="replyBlockedReason" class="text-xs text-muted">{{ page.props.labels[replyBlockedReason] }}</p>
