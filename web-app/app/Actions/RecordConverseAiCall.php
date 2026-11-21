@@ -97,6 +97,7 @@ class RecordConverseAiCall
 
     private function redact(string $text, array $secrets): string
     {
+        $text = str_replace('\/', '/', $text);
         $text = str_replace(array_values(array_filter($secrets)), '[redacted]', $text);
         if (preg_match('/\b(password|passcode|otp|cvv|api[ -]?key|bank account|card number|private key)\b|পাসওয়ার্ড|ওটিপি|পিন কোড|ব্যাংক অ্যাকাউন্ট/ui', $text)) {
             return '[redacted: credential-related content]';

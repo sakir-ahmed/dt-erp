@@ -91,7 +91,7 @@ it('shows filtered call statistics and provides redacted details only to setting
     Http::fake(['https://openrouter.ai/api/v1/chat/completions' => Http::sequence()
         ->push([
             'model' => 'fixture/free',
-            'choices' => [['finish_reason' => 'stop', 'message' => ['content' => 'Answer rejected by the validator.']]],
+            'choices' => [['finish_reason' => 'stop', 'message' => ['content' => 'Answer rejected by the validator. https:\/\/example.test\/reject']]],
             'usage' => ['prompt_tokens' => 11, 'completion_tokens' => 9, 'cost' => 0],
         ])
         ->push([
@@ -100,7 +100,7 @@ it('shows filtered call statistics and provides redacted details only to setting
             'usage' => ['prompt_tokens' => 20, 'completion_tokens' => 10, 'total_tokens' => 30, 'cost' => 0.00012],
         ])]);
     app(RouteConverseDraft::class)('Support instructions', json_encode([
-        'question' => "Contact example@example.test at +8801712345678; internal text {$secret}.",
+        'question' => "Contact example@example.test at +8801712345678; internal text {$secret}. See https://example.test/private.",
         'memory' => 'Private memory',
     ]), localOnly: false, accept: fn ($text) => $text === 'A grounded reply.', cloudOnly: true);
 
@@ -128,9 +128,9 @@ it('shows filtered call statistics and provides redacted details only to setting
 
     $response = $this->getJson($show)->assertOk()->assertHeaderContains('Cache-Control', 'no-store')
         ->assertJsonPath('detail.instructions', 'Support instructions')
-        ->assertJsonPath('detail.output', 'Answer rejected by the validator.');
+        ->assertJsonPath('detail.output', 'Answer rejected by the validator. [redacted]');
     expect($response->json('detail.input'))->toContain('[redacted]')
-        ->not->toContain('example@example.test', '+8801712345678', $secret, 'Private memory');
+        ->not->toContain('example@example.test', '+8801712345678', 'example.test/private', $secret, 'Private memory');
 });
 
 it('records Ollama embedding token usage without storing the vectors', function () {
