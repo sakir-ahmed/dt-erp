@@ -136,6 +136,30 @@ it('reports provider failure and keeps unindexed documents out of retrieval', fu
     $this->assertDatabaseCount('cv_knowledge_entries', 0);
 });
 
+it('indexes documents when an embedding batch needs more time than an interactive query', function () {
+    Http::fake(function (Request $request, array $options) {
+        $batchSize = count($request['input']);
+        $responseTime = 13 + 2 * $batchSize;
+        if ($options['timeout'] < $responseTime) {
+            return Http::failedConnection('Embedding request timed out.');
+        }
+
+        return Http::response(['embeddings' => array_fill(0, $batchSize, [1, 0])]);
+    });
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture']);
+    $paragraph = str_repeat('Example knowledge content. ', 33);
+    $this->actingAs(User::factory()->create()->assignRole('administrator'))
+        ->post(route('converse.knowledge.documents.store', $collection), [
+            'document' => UploadedFile::fake()->createWithContent('guide.md', str_repeat($paragraph."\n\n", 11)),
+        ])->assertRedirect();
+
+    $id = DB::table('cv_knowledge_documents')->soleValue('id');
+    app()->call([new IndexConverseDocument($id), 'handle']);
+
+    $this->assertDatabaseHas('cv_knowledge_documents', ['id' => $id, 'status' => 'indexed']);
+    $this->assertDatabaseCount('cv_knowledge_entries', 11);
+});
+
 it('ranks published document chunks by semantic similarity before applying the result limit', function () {
     Http::fake(['http://127.0.0.1:11434/api/embed' => Http::response(['embeddings' => [[1, 0]]])]);
     $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture', 'enabled' => true]);

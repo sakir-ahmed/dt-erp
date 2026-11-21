@@ -12,7 +12,7 @@ class EmbedConverseText
     /** @param list<string> $texts
      * @return list<list<float|int>>|null
      */
-    public function __invoke(array $texts, string $model): ?array
+    public function __invoke(array $texts, string $model, float $timeout = 10): ?array
     {
         $port = (int) $this->configuration->get()['ollama_port'];
         if ($port < 1 || $port > 65535 || ! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model)
@@ -21,7 +21,7 @@ class EmbedConverseText
         }
 
         try {
-            $response = Http::asJson()->withoutRedirecting()->connectTimeout(2)->timeout(10)
+            $response = Http::asJson()->withoutRedirecting()->connectTimeout(2)->timeout($timeout)
                 ->post("http://127.0.0.1:{$port}/api/embed", ['model' => $model, 'input' => $texts]);
         } catch (ConnectionException) {
             return null;

@@ -21,7 +21,7 @@ class IndexConverseDocument implements ShouldQueue
 {
     use Queueable;
 
-    public int $timeout = 110;
+    public int $timeout = 80;
 
     public function __construct(public int $documentId) {}
 
@@ -32,6 +32,7 @@ class IndexConverseDocument implements ShouldQueue
 
     public function handle(ConverseAiSettings $configuration, EmbedConverseText $embed, DetectConverseLanguage $languages): void
     {
+        $deadline = hrtime(true) + ($this->timeout - 5) * 1_000_000_000;
         $document = DB::table('cv_knowledge_documents')->find($this->documentId);
         if ($document?->status !== 'queued') {
             return;
@@ -55,8 +56,13 @@ class IndexConverseDocument implements ShouldQueue
             }
 
             $entries = [];
-            foreach (array_chunk($chunks, 10) as $batch) {
-                $vectors = $embed(array_column($batch, 'text'), $model);
+            foreach (array_chunk($chunks, 5) as $batch) {
+                $remaining = ($deadline - hrtime(true)) / 1_000_000_000;
+                if ($remaining <= 0) {
+                    throw new DomainException('Document indexing exceeded its time limit. Try re-indexing.');
+                }
+
+                $vectors = $embed(array_column($batch, 'text'), $model, min(25, $remaining));
                 if ($vectors === null) {
                     throw new DomainException('The local embedding model did not return usable vectors.');
                 }
