@@ -30,7 +30,7 @@ class RouteConverseDraft
         foreach ($candidates as $index => [$provider, $model, $key]) {
             if ($provider === 'ollama') {
                 $localDeadline ??= hrtime(true) + $budget * 1_000_000_000;
-                $reserve = count($local) > 1 && $model === $local[0][1] ? max(0, $budget - 15) : 0;
+                $reserve = count($local) > 1 && $model === $local[0][1] ? max(0, $budget - 20) : 0;
                 $timeout = ($localDeadline - hrtime(true)) / 1_000_000_000 - $reserve;
             } else {
                 $cloudDeadline ??= hrtime(true) + 21 * 1_000_000_000;

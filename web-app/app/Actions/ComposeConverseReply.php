@@ -74,6 +74,8 @@ class ComposeConverseReply
         }
 
         $compound = preg_match('/\b(and|also)\b|[?।!]\s*\S|এবং|সাথে|সঙ্গে|আরও|(?<![\p{L}\p{M}])ও(?![\p{L}\p{M}])/ui', $latest) === 1;
+        $complex = $compound || $intent === 'support'
+            || preg_match('/\b(compare|difference|workflow|integrat\w*|connects?)\b|পার্থক্য|তুলনা|ইন্টিগ্রেশন|কাজ করে কীভাবে/ui', $latest) === 1;
         $wantsFile = ! $sandbox && preg_match('/\b(attach|brochure|catalog(?:ue)?|pdf|product book|download|send (?:me )?(?:a |the )?(?:file|photo|image))\b|ব্রোশিওর|ক্যাটালগ|পিডিএফ|বই পাঠা|ছবি পাঠা/ui', $latest);
         $assets = $wantsFile && count($collections) === 1
             ? $this->assets->catalog($collections)->orderBy('asset.id')->limit(30)->get(['asset.id', 'asset.title'])
@@ -139,24 +141,26 @@ class ComposeConverseReply
             $entries = $entries->reject(fn (object $entry) => $entry->amount_type === 'one_time'
                 && $monthlySubjects->contains($entry->subject_id))->values();
         }
-        $entries = $entries->take(12);
+        $entries = $entries->take($complex ? 7 : 4);
 
         if ($entries->isEmpty()) {
             return $this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled);
         }
 
-        $context = $history->map(fn (object $row) => ['role' => $row->direction === 'in' ? 'customer' : 'assistant', 'text' => mb_substr($row->body, 0, 700)]);
+        $context = $history->take(-6)->values()->map(fn (object $row) => [
+            'role' => $row->direction === 'in' ? 'customer' : 'assistant', 'text' => mb_substr($row->body, 0, 450),
+        ]);
         $facts = [
             'scope' => $scope['label'], 'approved_assets' => $assets,
             'sources' => $entries->map(fn (object $entry) => [
                 'id' => $entry->id, 'title' => $entry->title, 'subject' => $entry->subject_title, 'kind' => $entry->kind,
                 'description' => in_array($entry->kind, ['price', 'offer'], true)
-                    ? $entry->amount_type : mb_substr($entry->body, 0, 650),
+                    ? $entry->amount_type : mb_substr($entry->body, 0, 380),
             ]),
         ];
         $input = json_encode([...$facts, 'memory' => $settings['memory'] ?? [], 'history' => $context], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
         $cloudInput = $cloudEnabled ? $this->cloudContext($context, $facts) : null;
-        $agentGuidance = $agent['instructions'] ?? '';
+        $agentGuidance = mb_substr($agent['instructions'] ?? '', 450);
 
         $select = function (string $text) use ($entries, $assets): ?array {
             $result = json_decode($text, true);
@@ -188,9 +192,9 @@ class ComposeConverseReply
             accept: fn (string $text): bool => $select($text) !== null,
             localFallback: $rule['fallback_model'] ?? $agent['fallback_model'] ?? null,
             localModel: $rule['model'] ?? $agent['model'] ?? null,
-            localBudget: 40,
+            localBudget: 42,
             cloudInput: $cloudInput,
-            complex: $compound || $intent === 'support' || preg_match('/\b(compare|difference|workflow|integrat\w*|connects?)\b|পার্থক্য|তুলনা|ইন্টিগ্রেশন|কাজ করে কীভাবে/ui', $latest) === 1,
+            complex: $complex,
         );
         if ($draft === null) {
             return $turn;
