@@ -85,6 +85,25 @@ function converseDocumentFixture(string $format): UploadedFile
     return UploadedFile::fake()->createWithContent("board.{$format}", $contents);
 }
 
+it('indexes and searches knowledge as text while Ollama is disabled', function () {
+    config(['converse.ai.ollama_enabled' => false]);
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture', 'enabled' => true]);
+    $admin = User::factory()->create()->assignRole('administrator');
+    $this->actingAs($admin)->post(route('converse.knowledge.documents.store', $collection), [
+        'document' => converseDocumentFixture('txt'),
+    ])->assertRedirect();
+    $document = DB::table('cv_knowledge_documents')->first();
+    app()->call([new IndexConverseDocument($document->id), 'handle']);
+    $this->assertDatabaseHas('cv_knowledge_documents', ['id' => $document->id, 'status' => 'indexed']);
+    $this->assertDatabaseHas('cv_knowledge_entries', ['document_id' => $document->id, 'embedding' => null]);
+    $this->patch(route('converse.knowledge.documents.update', [$collection, $document->id]), [
+        'enabled' => true, 'public' => true, 'priority' => 0,
+    ])->assertRedirect();
+    $result = app(RetrieveConverseKnowledge::class)([$collection], '', semanticQuery: 'How does the fictional sample board work?');
+    expect($result->first()->body)->toContain('Fictional sample board');
+    Http::assertNothingSent();
+});
+
 it('indexes supported text and Office files and enforces publication, expiry and collection isolation', function (string $format) {
     if ($format === 'pdf' && (new ExecutableFinder)->find('pdftotext') === null) {
         $this->markTestSkipped('Poppler pdftotext is required to extract PDF fixtures.');

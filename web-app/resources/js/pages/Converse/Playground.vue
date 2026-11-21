@@ -22,6 +22,7 @@ const form = useHttp({ language: 'en', local_only: true, sandbox: false, complex
 const providers = useForm({
     primary: props.providerSettings?.primary ?? 'ollama',
     allow_cloud: props.providerSettings?.allow_cloud ?? false,
+    ollama_enabled: props.providerSettings?.ollama_enabled ?? true,
     ollama_model: props.providerSettings?.ollama_model ?? '',
     ollama_fallback_model: props.providerSettings?.ollama_fallback_model ?? '',
     ollama_port: props.providerSettings?.ollama_port ?? 11434,
@@ -76,6 +77,7 @@ async function run() {
     completed.value = false;
     failed.value = false;
 
+    if (props.providerSettings?.ollama_enabled === false) form.local_only = false;
     try {
         const response = await form.post('/converse/playground');
         result.value = response.draft;
@@ -94,6 +96,11 @@ async function run() {
             <section class="rounded-lg border border-line bg-surface p-4" aria-labelledby="providers-title">
                 <h2 id="providers-title" class="mb-3 font-semibold">{{ page.props.labels.ai_providers }}</h2>
                 <form class="grid gap-3 sm:grid-cols-2" @submit.prevent="saveProviders">
+                    <label class="flex items-center gap-2 text-sm sm:col-span-2">
+                        <input v-model="providers.ollama_enabled" type="checkbox" class="accent-brand">
+                        {{ page.props.labels.ai_ollama_enabled }}
+                    </label>
+                    <p class="-mt-2 text-xs text-muted sm:col-span-2">{{ page.props.labels.ai_ollama_enabled_help }}</p>
                     <FormField v-slot="attrs" :label="page.props.labels.ai_primary" :error="providers.errors.primary" required>
                         <select v-model="providers.primary" v-bind="attrs" class="ui-input">
                             <option value="ollama">Ollama</option>
@@ -203,11 +210,11 @@ async function run() {
                     <input v-model="form.sandbox" type="checkbox" class="accent-brand">
                     {{ page.props.labels.ai_sandbox_knowledge }}
                 </label>
-                <label v-if="cloudAvailable && !form.sandbox" class="flex items-center gap-2 text-sm">
+                <label v-if="cloudAvailable && !form.sandbox && providerSettings.ollama_enabled" class="flex items-center gap-2 text-sm">
                     <input v-model="form.local_only" type="checkbox" class="accent-brand" :disabled="form.processing">
                     {{ page.props.labels.playground_local }}
                 </label>
-                <label v-if="cloudAvailable && !form.sandbox && !form.local_only" class="flex items-center gap-2 text-sm">
+                <label v-if="cloudAvailable && !form.sandbox && (!providerSettings.ollama_enabled || !form.local_only)" class="flex items-center gap-2 text-sm">
                     <input v-model="form.complex" type="checkbox" class="accent-brand" :disabled="form.processing">
                     {{ page.props.labels.ai_test_advanced }}
                 </label>

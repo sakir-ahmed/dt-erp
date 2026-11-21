@@ -20,11 +20,13 @@ class RouteConverseDraft
         ], fn (?string $model): bool => filled($model))));
         $cloud = $localOnly || $settings['allow_cloud'] !== true ? [] : $this->cloudCandidates($settings, $complex);
         $cloudFirst = $cloudInput === null && ($preferred ?? $settings['primary']) === 'openai';
-        $local = array_map(fn (string $model): array => ['ollama', $model, null], array_slice($local, 0, 2));
+        $local = $settings['ollama_enabled']
+            ? array_map(fn (string $model): array => ['ollama', $model, null], array_slice($local, 0, 2)) : [];
         $candidates = $cloudFirst ? [...$cloud, ...$local] : [...$local, ...$cloud];
         $budget = $localBudget ?? 36;
         $localDeadline = null;
         $cloudDeadline = null;
+        $cloudRemaining = count($cloud);
         foreach ($candidates as $index => [$provider, $model, $key]) {
             if ($provider === 'ollama') {
                 $localDeadline ??= hrtime(true) + $budget * 1_000_000_000;
@@ -32,7 +34,8 @@ class RouteConverseDraft
                 $timeout = ($localDeadline - hrtime(true)) / 1_000_000_000 - $reserve;
             } else {
                 $cloudDeadline ??= hrtime(true) + 21 * 1_000_000_000;
-                $timeout = min(9, ($cloudDeadline - hrtime(true)) / 1_000_000_000);
+                $timeout = min($cloudRemaining > 1 ? 7 : 11, ($cloudDeadline - hrtime(true)) / 1_000_000_000);
+                $cloudRemaining--;
             }
             if ($timeout < 1) {
                 continue;

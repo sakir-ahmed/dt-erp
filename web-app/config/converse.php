@@ -24,6 +24,7 @@ return [
         'allow_cloud' => env('CONVERSE_AI_ALLOW_CLOUD', false),
         'openai_key' => env('CONVERSE_OPENAI_API_KEY'),
         'openai_model' => env('CONVERSE_OPENAI_MODEL'),
+        'ollama_enabled' => env('CONVERSE_OLLAMA_ENABLED', true),
         'ollama_fallback_model' => env('CONVERSE_OLLAMA_FALLBACK_MODEL'),
         'ollama_model' => env('CONVERSE_OLLAMA_MODEL'),
         'ollama_port' => env('CONVERSE_OLLAMA_PORT', 11434),

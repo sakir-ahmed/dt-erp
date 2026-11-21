@@ -12,12 +12,17 @@ class RetrieveConverseKnowledge
 
     public function __invoke(array $collectionIds, string $search, bool $demo = false, int $limit = 10, ?string $semanticQuery = null, ?int $entryId = null, ?int $subjectId = null): Collection
     {
+        if ($collectionIds === []) {
+            return collect();
+        }
+
         $today = now('Asia/Dhaka')->toDateString();
         $term = trim(mb_substr($search, 0, 100));
 
         $model = $semanticQuery !== null ? $this->configuration->get()['embedding_model'] : null;
         $vector = is_string($model) && trim($semanticQuery ?? '') !== ''
             ? (($this->embed)([mb_substr($semanticQuery, 0, 1200)], $model)[0] ?? null) : null;
+        $keywords = $vector === null ? $this->searchWords($semanticQuery ?? '') : [];
 
         $candidates = DB::table('cv_knowledge_entries as entry')
             ->join('cv_knowledge_collections as collection', 'collection.id', '=', 'entry.collection_id')
@@ -36,7 +41,8 @@ class RetrieveConverseKnowledge
                     ->whereColumn('subject.collection_id', 'entry.collection_id')))
             ->when($term !== '', fn (Builder $query) => $query->where(fn (Builder $query) => $query
                 ->whereLike('entry.title', "%{$term}%")->orWhereLike('entry.body', "%{$term}%")->orWhereLike('subject.title', "%{$term}%")))
-            ->orderByDesc('document.priority')->orderByDesc('entry.updated_at')->orderByDesc('entry.id')->limit($vector !== null ? 150 : max(1, min(50, $limit)))
+            ->orderByDesc('document.priority')->orderByDesc('entry.updated_at')->orderByDesc('entry.id')
+            ->limit($vector !== null || $keywords !== [] ? 150 : max(1, min(50, $limit)))
             ->get(['entry.id', 'entry.collection_id', 'entry.kind', 'entry.language', 'entry.title', 'entry.body',
                 'entry.subject_id', 'subject.title as subject_title', 'entry.amount_type', 'entry.amount', 'entry.currency',
                 'entry.valid_from', 'entry.valid_to', 'entry.document_id', 'entry.embedding_model',
@@ -50,11 +56,26 @@ class RetrieveConverseKnowledge
 
                 return mb_stripos($semanticQuery, $entry->subject_title ?? $entry->title) !== false ? 1.0 : 0.0;
             });
+        } elseif ($keywords !== []) {
+            $candidates = $candidates->sortByDesc(function (object $entry) use ($keywords): int {
+                $title = $this->searchWords($entry->title);
+                $body = $this->searchWords($entry->body ?? '');
+
+                return count(array_intersect($keywords, $title)) * 2 + count(array_intersect($keywords, $body));
+            });
         }
 
         return $candidates->take($limit)->values()->each(function (object $entry): void {
             unset($entry->embedding);
         });
+    }
+
+    /** @return list<string> */
+    private function searchWords(string $text): array
+    {
+        $words = preg_split('/[^\p{L}\p{M}\p{N}]+/u', mb_strtolower($text), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        return array_values(array_unique(array_filter($words, fn (string $word): bool => mb_strlen($word) >= 3)));
     }
 
     private function published(Builder $query, string $alias, string $today): Builder

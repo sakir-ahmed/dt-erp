@@ -12,9 +12,9 @@ class ConverseAiSettings
     {
         $saved ??= DB::table('cv_ai_settings')->find(1);
         $settings = config('converse.ai');
-        foreach (['primary', 'allow_cloud', 'ollama_model', 'ollama_fallback_model', 'ollama_port', 'openai_model', 'embedding_model'] as $key) {
+        foreach (['primary', 'allow_cloud', 'ollama_enabled', 'ollama_model', 'ollama_fallback_model', 'ollama_port', 'openai_model', 'embedding_model'] as $key) {
             if (($saved->{$key} ?? null) !== null) {
-                $settings[$key] = $key === 'allow_cloud' ? (bool) $saved->{$key} : $saved->{$key};
+                $settings[$key] = in_array($key, ['allow_cloud', 'ollama_enabled'], true) ? (bool) $saved->{$key} : $saved->{$key};
             }
         }
         if ($saved?->routing) {
@@ -48,7 +48,7 @@ class ConverseAiSettings
         $settings = $this->get();
 
         return [
-            ...array_intersect_key($settings, array_flip(['primary', 'allow_cloud', 'ollama_model',
+            ...array_intersect_key($settings, array_flip(['primary', 'allow_cloud', 'ollama_enabled', 'ollama_model',
                 'ollama_fallback_model', 'ollama_port', 'openai_model', 'channels', 'auto_reply', 'agents', 'rules', 'cloud', 'embedding_model'])),
             'has_openai_key' => is_string($settings['openai_key']) && $settings['openai_key'] !== '',
             'cloud_providers' => array_keys(array_filter(

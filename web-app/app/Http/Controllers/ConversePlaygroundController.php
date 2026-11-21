@@ -54,7 +54,7 @@ class ConversePlaygroundController extends Controller
             'samples' => self::SAMPLES,
             'knowledgeSamples' => self::KNOWLEDGE_SAMPLES,
             'sandboxAvailable' => $this->sandboxCollection() !== null,
-            'cloudAvailable' => ! $demo && $settings['allow_cloud'] === true,
+            'cloudAvailable' => ! $demo && $settings['allow_cloud'] === true && $settings['cloud_providers'] !== [],
         ]);
     }
 
@@ -64,6 +64,7 @@ class ConversePlaygroundController extends Controller
         $data = $request->validate([
             'primary' => ['required', Rule::in(['ollama', 'openai'])],
             'allow_cloud' => ['required', 'boolean'],
+            'ollama_enabled' => ['sometimes', 'required', 'boolean'],
             'ollama_port' => ['required', 'integer', 'between:1,65535'],
             'ollama_model' => ['nullable', 'string', 'max:255', 'regex:/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', 'not_regex:/cloud/i'],
             'ollama_fallback_model' => ['nullable', 'string', 'max:255', 'regex:/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', 'not_regex:/cloud/i'],

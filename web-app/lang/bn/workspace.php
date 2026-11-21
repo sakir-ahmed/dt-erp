@@ -63,6 +63,8 @@ return [
     'ai_memory_next_step' => 'পরবর্তী পদক্ষেপ',
     'ai_providers' => 'এআই প্রদানকারী',
     'ai_primary' => 'নমুনা পরীক্ষার পছন্দের প্রদানকারী',
+    'ai_ollama_enabled' => 'Ollama চালু রাখুন (বিনা খরচের স্থানীয় AI)',
+    'ai_ollama_enabled_help' => 'বন্ধ করলে স্থানীয় মডেল উত্তর বা embedding তৈরি করবে না। Knowledge Base-এ তখন লেখা মিলিয়ে খোঁজা হবে।',
     'ai_ollama_port' => 'লোকাল Ollama পোর্ট',
     'ai_ollama_model' => 'Ollama মডেল',
     'ai_ollama_fallback' => 'বিকল্প Ollama মডেল',

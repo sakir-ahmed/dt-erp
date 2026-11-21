@@ -38,9 +38,10 @@ class IndexConverseDocument implements ShouldQueue
             return;
         }
 
-        $model = $configuration->get()['embedding_model'];
+        $settings = $configuration->get();
+        $model = $settings['ollama_enabled'] ? $settings['embedding_model'] : null;
         try {
-            if (! is_string($model) || $model === '') {
+            if ($settings['ollama_enabled'] && (! is_string($model) || $model === '')) {
                 throw new DomainException('Configure a local embedding model in the Playground.');
             }
 
@@ -62,8 +63,8 @@ class IndexConverseDocument implements ShouldQueue
                     throw new DomainException('Document indexing exceeded its time limit. Try re-indexing.');
                 }
 
-                $vectors = $embed(array_column($batch, 'text'), $model, min(25, $remaining));
-                if ($vectors === null) {
+                $vectors = $model === null ? null : $embed(array_column($batch, 'text'), $model, min(25, $remaining));
+                if ($model !== null && $vectors === null) {
                     throw new DomainException('The local embedding model did not return usable vectors.');
                 }
                 foreach ($batch as $index => $chunk) {
@@ -71,7 +72,7 @@ class IndexConverseDocument implements ShouldQueue
                         'document_id' => $document->id, 'collection_id' => $document->collection_id,
                         'kind' => 'document', 'language' => $chunk['language'], 'title' => $document->name,
                         'body' => $chunk['text'], 'enabled' => true, 'public' => true, 'embedding_model' => $model,
-                        'embedding' => json_encode($vectors[$index], JSON_THROW_ON_ERROR),
+                        'embedding' => $vectors === null ? null : json_encode($vectors[$index], JSON_THROW_ON_ERROR),
                         'created_at' => now(), 'updated_at' => now(),
                     ];
                 }

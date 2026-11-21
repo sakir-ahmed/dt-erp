@@ -14,8 +14,9 @@ class EmbedConverseText
      */
     public function __invoke(array $texts, string $model, float $timeout = 10): ?array
     {
-        $port = (int) $this->configuration->get()['ollama_port'];
-        if ($port < 1 || $port > 65535 || ! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model)
+        $settings = $this->configuration->get();
+        $port = (int) $settings['ollama_port'];
+        if (! $settings['ollama_enabled'] || $port < 1 || $port > 65535 || ! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model)
             || str_contains(strtolower($model), 'cloud')) {
             return null;
         }

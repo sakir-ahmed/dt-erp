@@ -63,6 +63,8 @@ return [
     'ai_memory_next_step' => 'Next step',
     'ai_providers' => 'AI providers',
     'ai_primary' => 'Preferred provider for sample tests',
+    'ai_ollama_enabled' => 'Enable Ollama (free local AI)',
+    'ai_ollama_enabled_help' => 'Turn off local model replies and embeddings. Knowledge search then uses text matches.',
     'ai_ollama_port' => 'Local Ollama port',
     'ai_ollama_model' => 'Ollama model',
     'ai_ollama_fallback' => 'Fallback Ollama model',

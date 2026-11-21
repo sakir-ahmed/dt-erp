@@ -72,6 +72,31 @@ it('returns a usable local draft and refuses the playground to staff', function 
     Http::assertSentCount(1);
 });
 
+it('can disable and re-enable the local provider without disabling configured cloud tests', function () {
+    $admin = User::factory()->create()->assignRole(WorkspaceRole::Administrator->value);
+    $form = ['primary' => 'ollama', 'allow_cloud' => true, 'ollama_port' => 11434,
+        'ollama_model' => 'fixture:local', 'remove_openai_key' => false];
+    $this->actingAs($admin)->patch(route('converse.playground.providers'), [...$form, 'ollama_enabled' => false])->assertRedirect();
+    $this->get(route('converse.playground.index'))->assertInertia(fn ($page) => $page->where('providerSettings.ollama_enabled', false));
+    Http::fake([
+        'https://api.openai.com/v1/responses' => Http::response([
+            'status' => 'completed',
+            'output' => [['type' => 'message', 'role' => 'assistant', 'content' => [['type' => 'output_text', 'text' => 'Thanks for writing.']]]],
+        ]),
+        'http://127.0.0.1:11434/api/chat' => Http::response([
+            'done' => true, 'done_reason' => 'stop', 'message' => ['content' => 'Thanks for writing.'],
+        ]),
+    ]);
+    $run = route('converse.playground.run');
+    $this->postJson($run, ['language' => 'en', 'local_only' => true])->assertJsonPath('draft', null);
+    $this->postJson($run, ['language' => 'en', 'local_only' => false])->assertJsonPath('draft.provider', 'openai');
+    Http::assertSentCount(1);
+
+    $this->patch(route('converse.playground.providers'), [...$form, 'ollama_enabled' => true])->assertRedirect();
+    $this->postJson($run, ['language' => 'en', 'local_only' => true])->assertJsonPath('draft.provider', 'ollama');
+    Http::assertSentCount(2);
+});
+
 it('allows only a non-demo admin to save encrypted provider settings and never returns the stored key', function () {
     $testKey = 'synthetic-provider-secret';
     $settings = [
