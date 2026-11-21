@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class ConverseKnowledgeController extends Controller
 {
@@ -35,7 +36,8 @@ class ConverseKnowledgeController extends Controller
             'outboundAssets' => $collection && ! $request->user()->is_demo
                 ? DB::table('cv_outbound_assets')->where('collection_id', $collection->id)->orderBy('title')->get(['id', 'title', 'name', 'approved']) : [],
             'documents' => $collection ? DB::table('cv_knowledge_documents')->where('collection_id', $collection->id)
-                ->orderByDesc('id')->get(['id', 'name', 'format', 'language', 'enabled', 'public', 'status', 'error', 'valid_from', 'valid_to']) : [],
+                ->orderByDesc('priority')->orderByDesc('id')
+                ->get(['id', 'name', 'format', 'language', 'enabled', 'public', 'status', 'error', 'valid_from', 'valid_to', 'priority']) : [],
             'subjects' => $collection ? DB::table('cv_knowledge_entries')->where('collection_id', $collection->id)
                 ->whereIn('kind', ['product', 'service'])->orderBy('title')->get(['id', 'title']) : [],
             'kinds' => self::KINDS,
@@ -155,6 +157,7 @@ class ConverseKnowledgeController extends Controller
         abort_unless($this->collections($request)->where('id', $collection)->exists(), 404);
         $data = $request->validate([
             'enabled' => ['required', 'boolean'], 'public' => ['required', 'boolean'],
+            'priority' => ['required', 'integer', 'min:0', 'max:255'],
             'valid_from' => ['nullable', 'date_format:Y-m-d'], 'valid_to' => ['nullable', 'date_format:Y-m-d',
                 Rule::when($request->filled('valid_from'), 'after_or_equal:valid_from')],
             'document' => ['nullable', 'file', 'max:2048', self::DOCUMENT_EXTENSIONS],
@@ -190,6 +193,26 @@ class ConverseKnowledgeController extends Controller
         }
 
         return to_route('converse.knowledge', ['collection' => $collection]);
+    }
+
+    public function showDocument(Request $request, int $collection, int $document): BinaryFileResponse
+    {
+        abort_unless($this->collections($request)->where('id', $collection)->exists(), 404);
+        $record = DB::table('cv_knowledge_documents')->where('collection_id', $collection)->where('id', $document)
+            ->first(['path', 'name', 'format']);
+        abort_if($record === null || ! Storage::disk('local')->exists($record->path), 404);
+
+        $types = [
+            'md' => 'text/markdown', 'txt' => 'text/plain', 'csv' => 'text/csv', 'json' => 'application/json',
+            'pdf' => 'application/pdf', 'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ];
+
+        return response()->file(Storage::disk('local')->path($record->path), [
+            'Content-Type' => $types[$record->format] ?? 'application/octet-stream',
+            'Content-Disposition' => 'inline; filename="'.$record->name.'"',
+            'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store',
+        ]);
     }
 
     public function reindexDocuments(Request $request, RecordConverseAudit $audit, int $collection, ?int $document = null): RedirectResponse

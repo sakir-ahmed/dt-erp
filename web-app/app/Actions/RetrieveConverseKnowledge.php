@@ -34,7 +34,7 @@ class RetrieveConverseKnowledge
                     ->whereColumn('subject.collection_id', 'entry.collection_id')))
             ->when($term !== '', fn (Builder $query) => $query->where(fn (Builder $query) => $query
                 ->whereLike('entry.title', "%{$term}%")->orWhereLike('entry.body', "%{$term}%")->orWhereLike('subject.title', "%{$term}%")))
-            ->orderByDesc('entry.updated_at')->orderByDesc('entry.id')->limit($vector !== null ? 150 : max(1, min(50, $limit)))
+            ->orderByDesc('document.priority')->orderByDesc('entry.updated_at')->orderByDesc('entry.id')->limit($vector !== null ? 150 : max(1, min(50, $limit)))
             ->get(['entry.id', 'entry.collection_id', 'entry.kind', 'entry.language', 'entry.title', 'entry.body',
                 'entry.subject_id', 'subject.title as subject_title', 'entry.amount_type', 'entry.amount', 'entry.currency',
                 'entry.valid_from', 'entry.valid_to', 'entry.document_id', 'entry.embedding_model',

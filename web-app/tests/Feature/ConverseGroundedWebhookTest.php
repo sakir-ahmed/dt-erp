@@ -67,7 +67,7 @@ it('runs a signed inbound webhook through indexed mixed-language knowledge, AI a
     app()->call([new IndexConverseDocument($document), 'handle']);
     $this->assertDatabaseHas('cv_knowledge_documents', ['id' => $document, 'language' => 'mixed', 'status' => 'indexed']);
     $this->patch(route('converse.knowledge.documents.update', [$collection, $document]), [
-        'enabled' => true, 'public' => true,
+        'enabled' => true, 'public' => true, 'priority' => 0,
     ])->assertRedirect();
 
     $signedMessage = function (string $id, string $sender, string $message, int $at) use ($whatsapp, $provider) {

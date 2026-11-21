@@ -102,7 +102,7 @@ it('indexes supported text and Office files and enforces publication, expiry and
     $retrieve = app(RetrieveConverseKnowledge::class);
     expect($retrieve([$collection], ''))->toBeEmpty();
     $url = route('converse.knowledge.documents.update', [$collection, $document->id]);
-    $this->patch($url, ['enabled' => true, 'public' => true])->assertRedirect();
+    $this->patch($url, ['enabled' => true, 'public' => true, 'priority' => 0])->assertRedirect();
 
     $results = $retrieve([$collection], '', semanticQuery: 'বোর্ড কিভাবে কাজ করে?');
     expect($results->sole()->body)->toContain('Fictional sample board')
@@ -113,7 +113,7 @@ it('indexes supported text and Office files and enforces publication, expiry and
     $this->get(route('converse.knowledge', ['collection' => $collection]))
         ->assertInertia(fn (Assert $page) => $page->where('documents.0.status', 'indexed')
             ->missing('documents.0.path')->has('entries.data', 0));
-    $this->patch($url, ['enabled' => true, 'public' => true, 'valid_to' => now('Asia/Dhaka')->subDay()->toDateString()])->assertRedirect();
+    $this->patch($url, ['enabled' => true, 'public' => true, 'priority' => 0, 'valid_to' => now('Asia/Dhaka')->subDay()->toDateString()])->assertRedirect();
     expect($retrieve([$collection], ''))->toBeEmpty();
 
     $this->post(route('converse.knowledge.documents.reindex', [$collection, $document->id]))->assertRedirect();
@@ -191,7 +191,7 @@ it('replaces a file without a language field, preserves the old upload and index
         ."Apni ei board diye kaj kivabe sajaben ta bujhte parben.\n\n"
         ."এই নির্দেশিকা explains how to organize the project board.\n\n1234 — 5678";
     $this->post(route('converse.knowledge.documents.update', [$collection, $previous->id]), [
-        '_method' => 'PATCH', 'enabled' => true, 'public' => true,
+        '_method' => 'PATCH', 'enabled' => true, 'public' => true, 'priority' => 5,
         'document' => UploadedFile::fake()->createWithContent('updated.md', $replacement),
     ])->assertRedirect();
     Storage::disk('local')->assertExists($previous->path);
@@ -207,4 +207,47 @@ it('replaces a file without a language field, preserves the old upload and index
         expect($results->pluck('language')->sort()->values()->all())->toBe(['banglish', 'bn', 'en', 'mixed', 'unknown']);
         expect($results->pluck('title')->unique()->all())->toBe(['updated.md']);
     }
+});
+
+it('edits document priority, orders by it, ranks retrieval, and previews the file', function () {
+    Http::fake(['http://127.0.0.1:11434/api/embed' => function (Request $request) {
+        $count = count($request['input']);
+
+        return Http::response(['embeddings' => array_fill(0, $count, array_fill(0, 4, 0.1))]);
+    }]);
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Fixture', 'enabled' => true]);
+    $this->actingAs(User::factory()->create()->assignRole('administrator'));
+
+    foreach ([['low', 0], ['high', 9]] as [$name, $priority]) {
+        $this->post(route('converse.knowledge.documents.store', $collection), [
+            'document' => UploadedFile::fake()->createWithContent("{$name}.md", "# {$name} guide\n\nShared sample content about {$name}.\n"),
+        ])->assertRedirect();
+        $document = DB::table('cv_knowledge_documents')->where('name', "{$name}.md")->first();
+        $this->patch(route('converse.knowledge.documents.update', [$collection, $document->id]), [
+            'enabled' => true, 'public' => true, 'priority' => $priority,
+        ])->assertRedirect();
+        app()->call([new IndexConverseDocument((int) $document->id), 'handle']);
+    }
+    $high = DB::table('cv_knowledge_documents')->where('name', 'high.md')->first();
+
+    $this->patch(route('converse.knowledge.documents.update', [$collection, $high->id]), [
+        'enabled' => true, 'public' => true, 'priority' => 300,
+    ])->assertSessionHasErrors('priority');
+    $this->patch(route('converse.knowledge.documents.update', [$collection, $high->id]), [
+        'enabled' => true, 'public' => true,
+    ])->assertSessionHasErrors('priority');
+
+    $this->get(route('converse.knowledge', ['collection' => $collection]))
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('documents.0.name', 'high.md')->where('documents.0.priority', 9)
+            ->where('documents.1.name', 'low.md')->where('documents.1.priority', 0));
+
+    $results = app(RetrieveConverseKnowledge::class)([$collection], 'Shared sample content');
+    expect($results->first()->body)->toContain('high');
+
+    $preview = $this->get(route('converse.knowledge.documents.preview', [$collection, $high->id]));
+    $preview->assertOk();
+    expect($preview->headers->get('Content-Disposition'))->toContain('inline')
+        ->and($preview->headers->get('Content-Type'))->toContain('text/markdown');
+    $this->get(route('converse.knowledge.documents.preview', [$collection + 999, $high->id]))->assertNotFound();
 });

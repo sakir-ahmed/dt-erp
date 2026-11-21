@@ -39,9 +39,10 @@ function toggleAsset(asset) {
 }
 
 const uploadForm = useForm({ document: null });
-const documentForm = useForm({ enabled: false, public: false, valid_from: '', valid_to: '', document: null });
+const documentForm = useForm({ enabled: false, public: false, priority: 0, valid_from: '', valid_to: '', document: null });
 const documentAction = useForm({});
-const selectedDocument = ref(null);
+const documentPanel = ref(false);
+const editingDocument = ref(null);
 const documentsPath = computed(() => `/converse/knowledge/collections/${props.collection.id}/documents`);
 const poll = usePoll(3000, { only: ['documents'] }, { autoStart: false });
 
@@ -56,17 +57,29 @@ watch(() => props.collection?.id, () => {
     assetUploadKey.value++;
     uploadForm.reset();
     uploadForm.clearErrors();
-    selectedDocument.value = null;
+    documentPanel.value = false;
 });
 
+function documentStatusClass(item) {
+    if (item.status === 'indexed') return 'bg-success/10 text-success';
+    if (item.status === 'failed') return 'bg-danger/10 text-danger';
+    return 'bg-page text-muted';
+}
+
 function editDocument(document) {
-    selectedDocument.value = document.id;
+    editingDocument.value = document;
     documentForm.enabled = Boolean(document.enabled);
     documentForm.public = Boolean(document.public);
+    documentForm.priority = document.priority ?? 0;
     documentForm.valid_from = document.valid_from ?? '';
     documentForm.valid_to = document.valid_to ?? '';
     documentForm.reset('document');
     documentForm.clearErrors();
+    documentPanel.value = true;
+}
+
+function previewDocument(document) {
+    window.open(`${documentsPath.value}/${document.id}/preview`, '_blank', 'noopener');
 }
 
 function uploadDocument(event) {
@@ -84,8 +97,7 @@ function saveDocument(id) {
     const url = `${documentsPath.value}/${id}`;
     const options = {
         preserveScroll: true,
-        onSuccess: () => { selectedDocument.value = null; },
-        onFinish: () => documentForm.transform((data) => data),
+        onSuccess: () => { documentPanel.value = false; },
     };
 
     if (documentForm.document) {
@@ -189,30 +201,25 @@ function save() {
             </form>
 
             <ul v-if="documents.length" class="mt-3 divide-y divide-line border-t border-line">
-                <li v-for="item in documents" :key="item.id" class="py-2">
-                    <div class="flex flex-wrap items-center justify-between gap-2">
-                        <div class="min-w-0">
-                            <p class="wrap-anywhere text-sm font-medium">{{ item.name }}</p>
-                            <p class="text-xs text-muted">{{ labels[`knowledge_document_${item.status}`] }} · {{ labels[item.enabled ? 'enabled' : 'disabled'] }} · {{ labels[item.public ? 'knowledge_public' : 'knowledge_internal'] }} · {{ labels[`knowledge_document_language_${item.language}`] }}</p>
-                            <p v-if="item.error" class="text-xs text-danger">{{ item.error }}</p>
-                        </div>
-                        <div class="flex gap-2">
-                            <button type="button" class="ui-button" @click="editDocument(item)">{{ labels.knowledge_edit_document }}</button>
-                            <button type="button" class="ui-button" :disabled="documentAction.processing" @click="reindex(item.id)">{{ labels.knowledge_reindex }}</button>
-                        </div>
+                <li v-for="item in documents" :key="item.id" class="flex flex-wrap items-center justify-between gap-2 py-2">
+                    <div class="min-w-0">
+                        <p class="flex flex-wrap items-center gap-2">
+                            <span class="wrap-anywhere text-sm font-medium">{{ item.name }}</span>
+                            <span v-if="item.priority > 0" class="rounded-full bg-brand/10 px-2 py-0.5 text-xs font-semibold text-brand">#{{ item.priority }}</span>
+                        </p>
+                        <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                            <span class="rounded-full px-2 py-0.5" :class="documentStatusClass(item)">{{ labels[`knowledge_document_${item.status}`] }}</span>
+                            <span class="rounded-full px-2 py-0.5" :class="item.enabled ? 'bg-success/10 text-success' : 'bg-page text-muted'">{{ labels[item.enabled ? 'enabled' : 'disabled'] }}</span>
+                            <span class="rounded-full bg-page px-2 py-0.5 text-muted">{{ labels[item.public ? 'knowledge_public' : 'knowledge_internal'] }}</span>
+                            <span class="rounded-full bg-page px-2 py-0.5 text-muted">{{ labels[`knowledge_document_language_${item.language}`] }}</span>
+                        </p>
+                        <p v-if="item.error" class="mt-1 text-xs text-danger">{{ item.error }}</p>
                     </div>
-                    <form v-if="selectedDocument === item.id" class="mt-2 flex flex-wrap items-end gap-3"
-                        @submit.prevent="saveDocument(item.id)">
-                        <label class="flex items-center gap-1 text-sm"><input v-model="documentForm.enabled" type="checkbox">{{ labels.enabled }}</label>
-                        <label class="flex items-center gap-1 text-sm"><input v-model="documentForm.public" type="checkbox">{{ labels.knowledge_public }}</label>
-                        <FormField v-slot="attrs" :label="labels.knowledge_valid_from" :error="documentForm.errors.valid_from"><input v-bind="attrs" v-model="documentForm.valid_from" type="date" class="ui-input"></FormField>
-                        <FormField v-slot="attrs" :label="labels.knowledge_valid_to" :error="documentForm.errors.valid_to"><input v-bind="attrs" v-model="documentForm.valid_to" type="date" class="ui-input"></FormField>
-                        <FormField v-slot="attrs" :label="labels.knowledge_replace_file" :error="documentForm.errors.document">
-                            <input v-bind="attrs" type="file" accept=".md,.txt,.pdf,.docx,.csv,.xlsx,.json" class="ui-input"
-                                @change="documentForm.document = $event.target.files[0] ?? null">
-                        </FormField>
-                        <button type="submit" class="ui-button" :disabled="documentForm.processing">{{ labels.save }}</button>
-                    </form>
+                    <div class="flex shrink-0 flex-wrap gap-2">
+                        <button type="button" class="ui-button" @click="previewDocument(item)">{{ labels.knowledge_preview_document }}</button>
+                        <button type="button" class="ui-button" @click="editDocument(item)">{{ labels.knowledge_edit_document }}</button>
+                        <button type="button" class="ui-button" :disabled="documentAction.processing" @click="reindex(item.id)">{{ labels.knowledge_reindex }}</button>
+                    </div>
                 </li>
             </ul>
         </section>
@@ -242,6 +249,40 @@ function save() {
                 </li>
             </ul>
         </section>
+
+        <SlideOver v-if="documentPanel && editingDocument" :title="labels.knowledge_edit_document" :close-label="labels.close" :busy="documentForm.processing" @close="documentPanel = false">
+            <form :id="`${formId}-document`" class="grid gap-3" @submit.prevent="saveDocument(editingDocument.id)">
+                <p class="wrap-anywhere text-sm text-muted">{{ editingDocument.name }}</p>
+                <FormField v-slot="attrs" :label="labels.knowledge_priority" :error="documentForm.errors.priority">
+                    <input v-bind="attrs" v-model="documentForm.priority" type="number" min="0" max="255" step="1" class="ui-input">
+                </FormField>
+                <p class="-mt-2 text-xs text-muted">{{ labels.knowledge_priority_help }}</p>
+                <label class="flex items-center gap-2 text-sm">
+                    <input v-model="documentForm.enabled" type="checkbox" class="accent-brand">
+                    {{ labels.enabled }}
+                </label>
+                <label class="flex items-center gap-2 text-sm">
+                    <input v-model="documentForm.public" type="checkbox" class="accent-brand">
+                    {{ labels.knowledge_public }}
+                </label>
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <FormField v-slot="attrs" :label="labels.knowledge_valid_from" :error="documentForm.errors.valid_from">
+                        <input v-bind="attrs" v-model="documentForm.valid_from" type="date" class="ui-input">
+                    </FormField>
+                    <FormField v-slot="attrs" :label="labels.knowledge_valid_to" :error="documentForm.errors.valid_to">
+                        <input v-bind="attrs" v-model="documentForm.valid_to" type="date" class="ui-input">
+                    </FormField>
+                </div>
+                <FormField v-slot="attrs" :label="labels.knowledge_replace_file" :error="documentForm.errors.document">
+                    <input v-bind="attrs" type="file" accept=".md,.txt,.pdf,.docx,.csv,.xlsx,.json" class="ui-input"
+                        @change="documentForm.document = $event.target.files[0] ?? null">
+                </FormField>
+            </form>
+            <template #footer>
+                <button type="button" class="ui-button" :disabled="documentForm.processing" @click="documentPanel = false">{{ labels.cancel }}</button>
+                <button type="submit" :form="`${formId}-document`" class="ui-button ui-button-primary" :disabled="documentForm.processing">{{ labels.save }}</button>
+            </template>
+        </SlideOver>
 
         <SlideOver v-if="panel" :title="panelTitle" :close-label="labels.close" :busy="form.processing" @close="panel = null">
             <form :id="formId" class="grid gap-3 sm:grid-cols-2" @submit.prevent="save">

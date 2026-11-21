@@ -97,6 +97,8 @@ Route::middleware('auth')->group(function () {
             ->whereNumber(['collection', 'asset'])->name('converse.knowledge.outbound-assets.update');
         Route::post('/collections/{collection}/documents', [ConverseKnowledgeController::class, 'uploadDocument'])
             ->whereNumber('collection')->middleware('throttle:12,1')->name('converse.knowledge.documents.store');
+        Route::get('/collections/{collection}/documents/{document}/preview', [ConverseKnowledgeController::class, 'showDocument'])
+            ->whereNumber(['collection', 'document'])->name('converse.knowledge.documents.preview');
         Route::patch('/collections/{collection}/documents/{document}', [ConverseKnowledgeController::class, 'updateDocument'])
             ->whereNumber(['collection', 'document'])->name('converse.knowledge.documents.update');
         Route::post('/collections/{collection}/documents/reindex/{document?}', [ConverseKnowledgeController::class, 'reindexDocuments'])
