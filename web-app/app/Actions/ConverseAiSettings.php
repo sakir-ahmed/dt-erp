@@ -2,12 +2,12 @@
 
 namespace App\Actions;
 
-use Illuminate\Contracts\Encryption\DecryptException;
-use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 
 class ConverseAiSettings
 {
+    public function __construct(private AiProviderCredentials $credentials) {}
+
     public function get(?object $saved = null): array
     {
         $saved ??= DB::table('cv_ai_settings')->find(1);
@@ -24,18 +24,8 @@ class ConverseAiSettings
         if ($saved?->channels) {
             $settings['channels'] = array_replace($settings['channels'], json_decode($saved->channels, true, flags: JSON_THROW_ON_ERROR));
         }
-        if ($saved?->openai_key_removed) {
-            $settings['openai_key'] = null;
-        }
-        if ($saved?->openai_key) {
-            try {
-                $settings['openai_key'] = Crypt::decryptString($saved->openai_key);
-            } catch (DecryptException) {
-                $settings['openai_key'] = null;
-            }
-        }
 
-        return $settings;
+        return [...$settings, 'cloud_keys' => $this->credentials->get()];
     }
 
     public function channel(int $id): array
@@ -50,11 +40,8 @@ class ConverseAiSettings
         return [
             ...array_intersect_key($settings, array_flip(['primary', 'allow_cloud', 'ollama_enabled', 'ollama_model',
                 'ollama_fallback_model', 'ollama_port', 'openai_model', 'channels', 'auto_reply', 'agents', 'rules', 'cloud', 'embedding_model'])),
-            'has_openai_key' => is_string($settings['openai_key']) && $settings['openai_key'] !== '',
-            'cloud_providers' => array_keys(array_filter(
-                [...$settings['cloud_keys'], 'openai' => $settings['openai_key']],
-                fn (?string $key): bool => filled($key),
-            )),
+            'has_openai_key' => isset($settings['cloud_keys']['openai']),
+            'cloud_providers' => array_keys($settings['cloud_keys']),
         ];
     }
 }

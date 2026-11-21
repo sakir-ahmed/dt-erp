@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\AiProviderCredentials;
 use App\Actions\RecordConverseInboundMessage;
 use App\Actions\WorkspaceSettings;
 use App\Jobs\ReplyToConverseTurn;
@@ -113,6 +114,55 @@ it('persists settings through the admin form and audits the change', function ()
     $this->patch('/settings/application', ['default_locale' => 'bn'])->assertRedirect();
     $this->get('/settings')->assertInertia(fn (AssertableInertia $page) => $page
         ->where('application.default_locale', 'bn'));
+});
+
+it('manages encrypted AI provider keys in common settings without exposing them', function () {
+    $route = route('settings.ai-providers.update');
+    $admin = User::factory()->create()->assignRole('administrator');
+    $demo = User::factory()->create(['is_demo' => true])->assignRole('administrator');
+    $keys = [
+        'openrouter_key' => 'fixture-router-secret', 'openai_key' => 'fixture-openai-secret',
+        'deepseek_key' => 'fixture-deepseek-secret', 'anthropic_key' => 'fixture-anthropic-secret',
+    ];
+    $this->actingAs(User::factory()->create()->assignRole('staff'))->patch($route, $keys)->assertForbidden();
+    $this->actingAs($demo)->patch($route, $keys)->assertForbidden();
+    $this->get(route('settings.index'))->assertInertia(fn (AssertableInertia $page) => $page->has('aiProviders', 0));
+
+    $this->actingAs($admin)->from(route('settings.index'))->patch($route, $keys)->assertRedirect(route('settings.index'));
+    $rows = DB::table('settings')->where('section', 'ai_provider_credentials')->pluck('value', 'key');
+    expect($rows)->toHaveCount(4);
+    foreach ($rows as $provider => $value) {
+        expect($value)->not->toContain($keys[$provider.'_key'])
+            ->and(Crypt::decryptString(json_decode($value, true)))->toBe($keys[$provider.'_key']);
+    }
+    $audit = DB::table('cv_audit_events')->where('action', 'settings.ai_provider_keys_updated')->soleValue('changes');
+    $page = $this->get(route('settings.index'))->assertInertia(fn (AssertableInertia $page) => $page
+        ->where('aiProviders.0.configured', true)->missing('aiProviders.0.key'));
+    foreach ($keys as $key) {
+        expect($audit)->not->toContain($key);
+        $page->assertDontSee($key);
+    }
+
+    $this->patch($route, ['openrouter_key' => 'fixture-replacement', 'remove_openrouter_key' => true])
+        ->assertSessionHasErrors('openrouter_key')->assertSessionMissing('_old_input.openrouter_key');
+    $this->patch($route, ['openrouter_key' => 'fixture-replacement', 'remove_deepseek_key' => true])->assertRedirect();
+    $saved = app(AiProviderCredentials::class)->get();
+    expect($saved['openrouter'])->toBe('fixture-replacement')
+        ->and($saved['openai'])->toBe($keys['openai_key'])
+        ->and($saved)->not->toHaveKey('deepseek');
+});
+
+it('migrates an existing encrypted OpenAI key into common settings', function () {
+    $stored = Crypt::encryptString('fixture-legacy-key');
+    DB::table('cv_ai_settings')->where('id', 1)->update(['openai_key' => $stored]);
+    $migration = require database_path('migrations/2026_11_21_193000_move_ai_provider_keys_to_workspace_settings.php');
+    $migration->up();
+
+    expect(app(AiProviderCredentials::class)->get())->toBe(['openai' => 'fixture-legacy-key']);
+    $this->assertDatabaseHas('cv_ai_settings', ['id' => 1, 'openai_key' => null]);
+
+    $migration->down();
+    $this->assertDatabaseHas('cv_ai_settings', ['id' => 1, 'openai_key' => $stored]);
 });
 
 it('uses the stored default locale for fresh sessions', function () {

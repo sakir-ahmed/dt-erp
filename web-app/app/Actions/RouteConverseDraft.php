@@ -74,7 +74,7 @@ class RouteConverseDraft
 
     private function cloudCandidates(array $settings, bool $complex): array
     {
-        $keys = [...$settings['cloud_keys'], 'openai' => $settings['openai_key']];
+        $keys = $settings['cloud_keys'];
         $models = $settings['cloud']['models'];
         if ($models === []) {
             $models = [['provider' => 'openai', 'model' => $settings['openai_model'], 'tier' => 'economy']];

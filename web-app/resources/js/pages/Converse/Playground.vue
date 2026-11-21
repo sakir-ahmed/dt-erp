@@ -2,7 +2,6 @@
 import { Head, Link, useForm, useHttp, usePage } from '@inertiajs/vue3';
 import { computed, ref } from 'vue';
 import FormField from '../../components/ui-kit/FormField.vue';
-import SecretField from '../../components/ui-kit/SecretField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
 
@@ -28,8 +27,6 @@ const providers = useForm({
     ollama_port: props.providerSettings?.ollama_port ?? 11434,
     embedding_model: props.providerSettings?.embedding_model ?? '',
     openai_model: props.providerSettings?.openai_model ?? '',
-    openai_key: '',
-    remove_openai_key: false,
 });
 const routing = useForm({
     routing: JSON.stringify({
@@ -65,7 +62,6 @@ function selectChannel() {
 function saveProviders() {
     providers.patch('/converse/playground/providers', {
         preserveScroll: true,
-        onSuccess: () => providers.reset('openai_key', 'remove_openai_key'),
     });
 }
 const result = ref(null);
@@ -122,21 +118,6 @@ async function run() {
                     <FormField v-slot="attrs" :label="page.props.labels.ai_openai_model" :error="providers.errors.openai_model">
                         <input v-model="providers.openai_model" v-bind="attrs" class="ui-input" maxlength="255">
                     </FormField>
-                    <FormField v-slot="attrs" :label="page.props.labels.ai_openai_key" :error="providers.errors.openai_key">
-                        <SecretField
-                            v-bind="attrs"
-                            :model-value="providers.openai_key"
-                            :placeholder="providers.remove_openai_key
-                                ? page.props.labels.send_token_pending_removal
-                                : providerSettings.has_openai_key ? `•••••••· ${page.props.labels.send_token_saved}` : page.props.labels.send_token_empty"
-                            :disabled="providers.remove_openai_key"
-                            @update:model-value="providers.openai_key = $event"
-                        />
-                    </FormField>
-                    <label v-if="providerSettings.has_openai_key" class="flex items-center gap-2 text-xs sm:col-span-2">
-                        <input v-model="providers.remove_openai_key" type="checkbox" class="accent-brand" @change="providers.openai_key = ''">
-                        {{ page.props.labels.ai_remove_openai_key }}
-                    </label>
                     <label class="flex items-center gap-2 text-sm sm:col-span-2">
                         <input v-model="providers.allow_cloud" type="checkbox" class="accent-brand">
                         {{ page.props.labels.ai_allow_cloud_samples }}
@@ -144,6 +125,9 @@ async function run() {
                     <p class="text-xs text-muted sm:col-span-2">
                         {{ page.props.labels.ai_cloud_connected }} {{ providerSettings.cloud_providers.join(', ') || page.props.labels.ai_cloud_none }}
                     </p>
+                    <Link v-if="page.props.canManageSettings" href="/settings#ai-providers" class="justify-self-start text-xs text-brand underline sm:col-span-2">
+                        {{ page.props.labels.settings_ai_provider_keys }}
+                    </Link>
                     <button type="submit" :disabled="providers.processing" class="ui-button justify-self-start">{{ page.props.labels.save }}</button>
                 </form>
             </section>

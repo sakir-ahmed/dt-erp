@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\AiProviderCredentials;
 use App\Actions\RecordConverseAudit;
 use App\Actions\WorkspaceSettings;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -17,15 +19,54 @@ class SettingsController extends Controller
 
     private const array CHANNEL_TYPES = ['messenger', 'whatsapp'];
 
-    public function index(Request $request, WorkspaceSettings $settings): Response
+    public function index(Request $request, WorkspaceSettings $settings, AiProviderCredentials $credentials): Response
     {
+        $aiProviders = [];
+        if (! $request->user()->is_demo) {
+            $configured = $credentials->get();
+            foreach (AiProviderCredentials::PROVIDERS as $id => $name) {
+                $aiProviders[] = ['id' => $id, 'name' => $name, 'configured' => isset($configured[$id])];
+            }
+        }
+
         return Inertia::render('Settings/Index', [
             'application' => $settings->application(),
             'converse' => $settings->converse(),
             'locales' => self::LOCALES,
             'modes' => self::MODES,
             'channelTypes' => self::CHANNEL_TYPES,
+            'aiProviders' => $aiProviders,
         ]);
+    }
+
+    public function updateAiProviders(Request $request, AiProviderCredentials $credentials, RecordConverseAudit $audit): RedirectResponse
+    {
+        abort_if($request->user()->is_demo, 403);
+        $rules = [];
+        foreach (array_keys(AiProviderCredentials::PROVIDERS) as $provider) {
+            $rules[$provider.'_key'] = ['nullable', 'string', 'max:4096', "prohibited_if:remove_{$provider}_key,true"];
+            $rules["remove_{$provider}_key"] = ['sometimes', 'boolean'];
+        }
+        $data = $request->validate($rules);
+        $keys = $changes = [];
+        foreach (array_keys(AiProviderCredentials::PROVIDERS) as $provider) {
+            $key = $data[$provider.'_key'] ?? null;
+            $remove = (bool) ($data["remove_{$provider}_key"] ?? false);
+            if ($remove || $key !== null) {
+                $keys[$provider] = $remove ? null : $key;
+                $changes[$provider] = $remove ? 'removed' : 'saved';
+            }
+        }
+
+        if ($changes !== []) {
+            DB::transaction(function () use ($request, $credentials, $audit, $keys, $changes): void {
+                $credentials->put($keys);
+                $audit($request->user()->id, 'settings.ai_provider_keys_updated', 'settings', 0, $changes);
+            });
+            Inertia::flash('success', __('workspace.settings_saved'));
+        }
+
+        return back();
     }
 
     public function updateApplication(Request $request, WorkspaceSettings $settings, RecordConverseAudit $audit): RedirectResponse

@@ -3,6 +3,7 @@ import { Head, useForm, usePage } from '@inertiajs/vue3';
 import { watch } from 'vue';
 import FormField from '../../components/ui-kit/FormField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
+import SecretField from '../../components/ui-kit/SecretField.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
 
 const props = defineProps({
@@ -11,6 +12,7 @@ const props = defineProps({
     locales: { type: Array, required: true },
     modes: { type: Array, required: true },
     channelTypes: { type: Array, required: true },
+    aiProviders: { type: Array, required: true },
 });
 
 const page = usePage();
@@ -21,6 +23,16 @@ const converse = useForm({
     new_conversation_mode: props.converse.new_conversation_mode,
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(props.converse.channel_types?.[type])])),
 });
+const providerKeys = useForm(Object.fromEntries(
+    props.aiProviders.flatMap(({ id }) => [[id + '_key', ''], ['remove_' + id + '_key', false]]),
+));
+
+function saveProviderKeys() {
+    providerKeys.patch('/settings/ai-providers', {
+        preserveScroll: true,
+        onSuccess: () => providerKeys.reset(),
+    });
+}
 
 watch(() => props.application.default_locale, (value) => application.defaults({ default_locale: value }));
 watch(() => props.converse, (value) => converse.defaults({
@@ -71,6 +83,31 @@ watch(() => props.converse, (value) => converse.defaults({
                 </fieldset>
                 <button type="submit" class="ui-button ui-button-primary justify-self-start" :disabled="converse.processing">
                     {{ page.props.labels.save }}
+                </button>
+            </form>
+            <form v-if="aiProviders.length" id="ai-providers"
+                class="grid scroll-mt-20 gap-3 rounded-lg border border-line bg-surface p-3 lg:col-span-2"
+                @submit.prevent="saveProviderKeys">
+                <h2 class="font-semibold">{{ page.props.labels.settings_ai_provider_keys }}</h2>
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <div v-for="{ id, name, configured } in aiProviders" :key="id" class="grid content-start gap-2">
+                        <FormField v-slot="attrs" :label="page.props.labels.settings_ai_provider_key.replace(':provider', name)"
+                            :error="providerKeys.errors[id + '_key']">
+                            <SecretField v-bind="attrs" v-model="providerKeys[id + '_key']"
+                                :placeholder="page.props.labels[providerKeys['remove_' + id + '_key'] ? 'settings_ai_provider_key_pending_removal'
+                                    : configured ? 'settings_ai_provider_key_saved' : 'settings_ai_provider_key_empty']"
+                                :disabled="providerKeys.processing || providerKeys['remove_' + id + '_key']" />
+                        </FormField>
+                        <label v-if="configured" class="flex items-center gap-2 text-xs">
+                            <input v-model="providerKeys['remove_' + id + '_key']" type="checkbox" class="accent-brand"
+                                :disabled="providerKeys.processing" @change="providerKeys[id + '_key'] = ''">
+                            {{ page.props.labels.settings_ai_provider_key_remove.replace(':provider', name) }}
+                        </label>
+                    </div>
+                </div>
+                <button type="submit" class="ui-button ui-button-primary justify-self-start"
+                    :disabled="providerKeys.processing || !providerKeys.isDirty">
+                    {{ page.props.labels.settings_ai_provider_keys_save }}
                 </button>
             </form>
         </div>

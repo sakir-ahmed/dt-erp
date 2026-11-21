@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\AiProviderCredentials;
 use App\Actions\RecordConverseInboundMessage;
 use App\Jobs\ReplyToConverseTurn;
 use App\Models\User;
@@ -20,8 +21,8 @@ beforeEach(function () {
         'converse.ai.ollama_model' => 'fixture',
         'converse.ai.allow_cloud' => true,
         'converse.ai.openai_model' => 'cloud-fixture',
-        'converse.ai.openai_key' => 'unused-fixture',
     ]);
+    app(AiProviderCredentials::class)->put(['openai' => 'unused-fixture']);
 });
 
 function aiChatFixture(string $channel = 'messenger'): array
@@ -167,14 +168,14 @@ it('tries both local models before cloud and promotes only complex questions to 
     config([
         'converse.ai.primary' => 'openai',
         'converse.ai.ollama_fallback_model' => 'fixture-strong',
-        'converse.ai.cloud_keys.openrouter' => 'fixture-router',
-        'converse.ai.cloud_keys.deepseek' => 'fixture-deepseek',
-        'converse.ai.cloud_keys.anthropic' => 'fixture-claude',
         'converse.ai.cloud' => ['live' => true, 'models' => [
             ['provider' => 'anthropic', 'model' => 'fixture-advanced', 'tier' => 'advanced'],
             ['provider' => 'deepseek', 'model' => 'fixture-economy', 'tier' => 'economy'],
             ['provider' => 'openrouter', 'model' => 'fixture/model:free', 'tier' => 'free'],
         ]],
+    ]);
+    app(AiProviderCredentials::class)->put([
+        'openrouter' => 'fixture-router', 'deepseek' => 'fixture-deepseek', 'anthropic' => 'fixture-claude',
     ]);
     $entry = DB::table('cv_knowledge_entries')->insertGetId([
         'collection_id' => $collection, 'kind' => 'faq', 'title' => 'Kitchen display',

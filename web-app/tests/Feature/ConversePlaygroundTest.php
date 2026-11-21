@@ -1,5 +1,6 @@
 <?php
 
+use App\Actions\AiProviderCredentials;
 use App\Enums\WorkspaceRole;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
@@ -18,9 +19,9 @@ beforeEach(function () {
         'converse.ai.primary' => 'ollama',
         'converse.ai.ollama_model' => 'fixture:local',
         'converse.ai.openai_model' => 'fixture-model',
-        'converse.ai.openai_key' => 'fixture-openai-token',
         'converse.ai.allow_cloud' => true,
     ]);
+    app(AiProviderCredentials::class)->put(['openai' => 'fixture-openai-token']);
     Http::preventStrayRequests();
 });
 
@@ -112,14 +113,14 @@ it('allows only a non-demo admin to save encrypted provider settings and never r
     $this->actingAs($demo)->patch($url, $settings)->assertForbidden();
     $this->actingAs($admin)->patch($url, $settings)->assertRedirect(route('converse.playground.index'));
 
-    $ciphertext = DB::table('cv_ai_settings')->where('id', 1)->value('openai_key');
+    $ciphertext = json_decode(DB::table('settings')->where(['section' => 'ai_provider_credentials', 'key' => 'openai'])->value('value'), true);
     expect($ciphertext)->not->toBe($testKey);
     expect(Crypt::decryptString($ciphertext))->toBe($testKey);
     expect(DB::table('cv_audit_events')->where('action', 'ai.providers_saved')->soleValue('changes'))->not->toContain($testKey);
     $this->get(route('converse.playground.index'))->assertDontSee($testKey)->assertDontSee($ciphertext);
 
     $this->patch($url, [...$settings, 'openai_key' => '', 'remove_openai_key' => true])->assertRedirect();
-    $this->assertDatabaseHas('cv_ai_settings', ['openai_key' => null, 'openai_key_removed' => true]);
+    $this->assertDatabaseHas('settings', ['section' => 'ai_provider_credentials', 'key' => 'openai', 'value' => 'null']);
     $this->get(route('converse.playground.index'))->assertInertia(
         fn ($page) => $page->where('providerSettings.has_openai_key', false)->missing('providerSettings.openai_key'),
     );

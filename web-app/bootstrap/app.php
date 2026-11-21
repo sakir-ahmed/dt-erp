@@ -19,7 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->web(append: [HandleInertiaRequests::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        $exceptions->dontFlash(['send_token', 'openai_key']);
+        $exceptions->dontFlash(['send_token', 'openai_key', 'openrouter_key', 'deepseek_key', 'anthropic_key']);
 
         $exceptions->respond(function (Response $response, Throwable $exception, Request $request): Response {
             $status = $response->getStatusCode();

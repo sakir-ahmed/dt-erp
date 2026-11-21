@@ -2,14 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\AiProviderCredentials;
 use App\Actions\ComposeConverseReply;
 use App\Actions\ConverseAiSettings;
 use App\Actions\RecordConverseAudit;
 use App\Actions\RouteConverseDraft;
+use App\Enums\WorkspacePermission;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -58,7 +59,7 @@ class ConversePlaygroundController extends Controller
         ]);
     }
 
-    public function saveProviders(Request $request, RecordConverseAudit $audit): RedirectResponse
+    public function saveProviders(Request $request, RecordConverseAudit $audit, AiProviderCredentials $credentials): RedirectResponse
     {
         abort_if($request->user()->is_demo, 403);
         $data = $request->validate([
@@ -71,22 +72,22 @@ class ConversePlaygroundController extends Controller
             'embedding_model' => ['nullable', 'string', 'max:255', 'regex:/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', 'not_regex:/cloud/i'],
             'openai_model' => ['nullable', 'string', 'max:255', 'regex:/^[a-zA-Z0-9_.:-]+$/D'],
             'openai_key' => ['nullable', 'string', 'max:4096', 'prohibited_if:remove_openai_key,true'],
-            'remove_openai_key' => ['required', 'boolean'],
+            'remove_openai_key' => ['sometimes', 'boolean'],
         ]);
         $secret = $data['openai_key'] ?? null;
-        $remove = $data['remove_openai_key'];
+        $remove = (bool) ($data['remove_openai_key'] ?? false);
         unset($data['openai_key'], $data['remove_openai_key']);
+        $changed = $remove || $secret !== null;
+        abort_if($changed && ! $request->user()->can(WorkspacePermission::ManageSettings->value), 403);
 
-        DB::transaction(function () use ($request, $audit, $data, $secret, $remove): void {
-            $changes = $data;
-            if ($remove || $secret !== null) {
-                $changes['openai_key'] = $remove ? null : Crypt::encryptString($secret);
-                $changes['openai_key_removed'] = (bool) $remove;
+        DB::transaction(function () use ($request, $audit, $credentials, $data, $secret, $remove, $changed): void {
+            if ($changed) {
+                $credentials->put(['openai' => $remove ? null : $secret]);
             }
 
-            DB::table('cv_ai_settings')->where('id', 1)->update($changes);
+            DB::table('cv_ai_settings')->where('id', 1)->update($data);
             $audit($request->user()->id, 'ai.providers_saved', 'ai_settings', 1, [
-                ...$data, 'key_changed' => $remove || $secret !== null, 'key_removed' => (bool) $remove,
+                ...$data, 'key_changed' => $changed, 'key_removed' => $remove,
             ]);
         });
 

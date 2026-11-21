@@ -42,15 +42,12 @@ class WorkspaceSettings
     public function put(string $section, array $values): void
     {
         $now = now();
+        $rows = [];
         foreach ($values as $key => $value) {
-            $existing = DB::table('settings')->where('section', $section)->where('key', $key)->first();
-            $row = ['value' => json_encode($value), 'updated_at' => $now];
-            if ($existing === null) {
-                DB::table('settings')->insert(['section' => $section, 'key' => $key, 'created_at' => $now, ...$row]);
-            } else {
-                DB::table('settings')->where('id', $existing->id)->update($row);
-            }
+            $rows[] = ['section' => $section, 'key' => $key, 'value' => json_encode($value, JSON_THROW_ON_ERROR),
+                'created_at' => $now, 'updated_at' => $now];
         }
+        DB::table('settings')->upsert($rows, ['section', 'key'], ['value', 'updated_at']);
     }
 
     /** @return array<string, mixed> */

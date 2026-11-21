@@ -132,6 +132,9 @@ Route::middleware('auth')->group(function () {
     Route::patch('/settings/converse', [SettingsController::class, 'updateConverse'])
         ->can(WorkspacePermission::ManageSettings->value)
         ->name('settings.converse.update');
+    Route::patch('/settings/ai-providers', [SettingsController::class, 'updateAiProviders'])
+        ->can(WorkspacePermission::ManageSettings->value)
+        ->name('settings.ai-providers.update');
 
     Route::post('/logout', [SessionController::class, 'destroy'])->name('logout');
 });
