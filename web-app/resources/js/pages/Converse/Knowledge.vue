@@ -168,10 +168,8 @@ async function askChat() {
     chatTranscript.value.push({ role: 'user', body: message, at: new Date().toISOString() });
     chatMessage.value = '';
     try {
-        const response = await chat.post('/converse/knowledge/chat', {
-            message,
-            ...(chatScope.value !== 'all' ? { collection: Number(chatScope.value) } : {}),
-        });
+        chat.defaults({ message, collection: chatScope.value === 'all' ? null : Number(chatScope.value) });
+        const response = await chat.post('/converse/knowledge/chat');
         chatTranscript.value.push({ role: 'ai', at: new Date().toISOString(), ...response.reply });
     } catch {
         chatError.value = true;
