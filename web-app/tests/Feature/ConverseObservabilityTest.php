@@ -75,6 +75,23 @@ it('exposes inbound attachment metadata to the Inbox payload', function () {
             ->where('messages.data.0.attachment_bytes', strlen($png)));
 });
 
+it('exposes the WhatsApp number to inbox managers only', function () {
+    [$account, $thread] = observableThread();
+
+    $this->actingAs(User::factory()->create()->assignRole('staff'))
+        ->get(route('converse.inbox', $thread))
+        ->assertInertia(fn (AssertableInertia $page) => $page
+            ->where('thread.contact_phone', '8801000000201'));
+
+    $viewer = User::factory()->create();
+    $viewer->givePermissionTo('converse.inbox.view');
+
+    $this->actingAs($viewer)
+        ->get(route('converse.inbox', $thread))
+        ->assertInertia(fn (AssertableInertia $page) => $page
+            ->missing('thread.contact_phone'));
+});
+
 function observableThread(string $channel = 'whatsapp'): array
 {
     $account = DB::table('cv_channel_accounts')->insertGetId([

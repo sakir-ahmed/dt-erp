@@ -1,6 +1,7 @@
 <script setup>
 import { Head, Link, router, useForm, useHttp, usePage, usePoll } from '@inertiajs/vue3';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { toast } from 'vue-sonner';
 import AppIcon from '../../components/AppIcon.vue';
 import ChannelBrandIcon from '../../components/ChannelBrandIcon.vue';
 import ConverseContactAvatar from '../../components/ConverseContactAvatar.vue';
@@ -36,23 +37,36 @@ const state = useForm({ mode: '', status: '', search: '', channel: '', filter_st
 const reply = useForm({ body: '', operation_id: '', attachment: null, catalog_attachment_id: null });
 const filePicker = ref(null);
 const attachButton = ref(null);
-const selectedAttachment = computed(() => reply.attachment?.name
-    ?? props.catalogAttachments.find(({ id }) => id === reply.catalog_attachment_id)?.title
-    ?? '');
-const hasAttachment = computed(() => Boolean(reply.attachment || reply.catalog_attachment_id));
+const pendingFiles = ref([]);
+const sending = ref(false);
+const selectedAttachment = computed(() => props.catalogAttachments.find(({ id }) => id === reply.catalog_attachment_id)?.title ?? '');
+const hasAttachment = computed(() => Boolean(pendingFiles.value.length || reply.catalog_attachment_id));
 const retryForm = useForm({});
 function retryAttachment(messageId) {
     retryForm.post(`/converse/inbox/${props.thread.id}/attachments/${messageId}/retry`, { preserveScroll: true });
 }
 
+function copyText(value, message) {
+    if (!value) return;
+    navigator.clipboard?.writeText(value).then(
+        () => toast.success(message),
+        () => {},
+    );
+}
+
 function selectFile(event) {
-    const file = event.target.files[0];
-    if (file) {
-        reply.attachment = file;
+    for (const file of event.target.files) {
+        if (pendingFiles.value.length >= 5) break;
+        pendingFiles.value.push(file);
         reply.catalog_attachment_id = null;
         reply.clearErrors('attachment', 'catalog_attachment_id');
     }
     event.target.value = '';
+}
+
+function removePendingFile(index) {
+    pendingFiles.value.splice(index, 1);
+    reply.clearErrors('attachment', 'catalog_attachment_id');
 }
 
 function selectCatalog() {
@@ -180,17 +194,45 @@ watch([() => props.thread?.id, () => props.thread?.mode, () => props.thread?.sta
     }
 }, { immediate: true });
 
-function sendReply() {
-    reply.operation_id ||= crypto.randomUUID();
-    reply.post(`/converse/inbox/${props.thread.id}/reply`, {
-        preserveScroll: true,
-        onSuccess: () => {
-            reply.reset();
+async function sendReply() {
+    if (sending.value || reply.processing || replyBlockedReason.value || (!reply.body.trim() && !hasAttachment.value)) {
+        return;
+    }
+    sending.value = true;
+    // The text travels with the first file; each queued file is delivered as
+    // its own provider message through the existing single-attachment flow.
+    const files = [...pendingFiles.value];
+    const body = reply.body;
+    let sent = 0;
+    try {
+        for (const file of files) {
+            reply.body = sent === 0 ? body : '';
+            reply.attachment = file;
+            reply.operation_id = crypto.randomUUID();
+            await reply.post(`/converse/inbox/${props.thread.id}/reply`, { preserveScroll: true });
+            if (reply.hasErrors) break;
+            sent++;
+        }
+        if (!reply.hasErrors && (!files.length || sent === 0)) {
+            reply.operation_id = crypto.randomUUID();
+            await reply.post(`/converse/inbox/${props.thread.id}/reply`, { preserveScroll: true });
+            if (!reply.hasErrors) sent++;
+        }
+    } finally {
+        sending.value = false;
+        reply.attachment = null;
+        pendingFiles.value = files.slice(reply.hasErrors ? sent : files.length);
+        if (sent > 0) {
+            reply.body = '';
             void playConverseCue('message_sent');
             pinnedToBottom.value = true;
             nextTick(scrollToBottom);
-        },
-    });
+        }
+        if (!reply.hasErrors) {
+            reply.reset();
+            reply.clearErrors();
+        }
+    }
 }
 
 function saveState() {
@@ -296,6 +338,26 @@ function threadUrl(id) {
                                 {{ thread.account }} · {{ page.props.labels[thread.channel] ?? thread.channel }}
                             </p>
                         </div>
+                        <div v-if="thread.contact_phone && canManageInbox" class="ms-auto flex flex-wrap items-center gap-1">
+                            <a class="rounded-md bg-page px-2 py-0.5 text-xs font-medium underline decoration-transparent hover:decoration-current"
+                                :title="page.props.labels.contact_number" :href="`https://wa.me/${thread.contact_phone}`" target="_blank" rel="noopener">
+                                +{{ thread.contact_phone }}
+                            </a>
+                            <button type="button" class="ui-button ui-button-icon"
+                                :aria-label="page.props.labels.copy_number" :title="page.props.labels.copy_number"
+                                @click="copyText(`+${thread.contact_phone}`, page.props.labels.copied_secret)">
+                                <AppIcon name="copy" />
+                            </button>
+                            <a class="ui-button ui-button-icon" :href="`tel:+${thread.contact_phone}`"
+                                :aria-label="page.props.labels.call_number" :title="page.props.labels.call_number">
+                                <AppIcon name="phone" />
+                            </a>
+                            <button type="button" class="ui-button ui-button-icon"
+                                :aria-label="page.props.labels.copy_whatsapp_link" :title="page.props.labels.copy_whatsapp_link"
+                                @click="copyText(`https://wa.me/${thread.contact_phone}`, page.props.labels.copied_secret)">
+                                <AppIcon name="link" />
+                            </button>
+                        </div>
                     </div>
                     <p v-if="!canManageInbox" class="mt-1 text-xs text-muted">{{ page.props.labels[`status_${thread.status}`] }} · {{ page.props.labels[`mode_${thread.mode}`] }}</p>
                     <details v-if="Object.keys(thread.memory ?? {}).length || thread.language_preference" class="mt-2 text-xs text-muted">
@@ -369,14 +431,25 @@ function threadUrl(id) {
                     <p v-if="replyBlockedReason" class="text-xs text-muted">{{ page.props.labels[replyBlockedReason] }}</p>
                     <label v-else class="grid gap-1 text-xs font-medium">
                         {{ page.props.labels.reply_body }}
-                        <textarea v-model="reply.body" maxlength="2000" rows="3" :required="!hasAttachment" :disabled="reply.processing" class="w-full rounded-md border border-line bg-page p-2 text-[13px]" />
+                        <textarea v-model="reply.body" maxlength="2000" rows="3" :required="!hasAttachment"
+                            :disabled="reply.processing || sending" class="w-full rounded-md border border-line bg-page p-2 text-[13px]"
+                            @keydown.enter.exact.prevent="sendReply" />
+                        <span class="text-[11px] font-normal text-muted">{{ page.props.labels.reply_enter_hint }}</span>
                     </label>
                     <div v-if="hasAttachment" class="grid min-w-0 gap-1 rounded-md border border-line bg-page px-2 py-1.5">
-                        <div class="flex min-w-0 items-center gap-2">
+                        <div v-if="selectedAttachment" class="flex min-w-0 items-center gap-2">
                             <AppIcon name="paperclip" class="shrink-0 text-muted" />
                             <span class="min-w-0 flex-1 truncate text-xs font-medium" :title="selectedAttachment">{{ selectedAttachment }}</span>
-                            <button type="button" class="ui-button ui-button-icon shrink-0" :disabled="reply.processing"
+                            <button type="button" class="ui-button ui-button-icon shrink-0" :disabled="reply.processing || sending"
                                 :aria-label="page.props.labels.converse_remove_attachment" @click="removeAttachment">
+                                <AppIcon name="close" />
+                            </button>
+                        </div>
+                        <div v-for="(file, index) in pendingFiles" :key="`${file.name}-${file.size}-${index}`" class="flex min-w-0 items-center gap-2">
+                            <AppIcon :name="file.type === 'application/pdf' ? 'file-pdf' : 'file'" class="shrink-0 text-muted" />
+                            <span class="min-w-0 flex-1 truncate text-xs font-medium" :title="file.name">{{ file.name }}</span>
+                            <button type="button" class="ui-button ui-button-icon shrink-0" :disabled="reply.processing || sending"
+                                :aria-label="page.props.labels.converse_remove_attachment" @click="removePendingFile(index)">
                                 <AppIcon name="close" />
                             </button>
                         </div>
@@ -389,8 +462,8 @@ function threadUrl(id) {
                     <p v-if="draftUnavailable" role="status" class="text-xs text-muted">{{ page.props.labels.playground_unavailable }}</p>
                     <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
                         <div class="flex min-w-0 flex-wrap items-center gap-2">
-                            <input ref="filePicker" type="file" accept=".pdf,.jpeg,.jpg,.png" hidden
-                                :disabled="reply.processing || Boolean(replyBlockedReason)" @change="selectFile">
+                            <input ref="filePicker" type="file" accept=".pdf,.jpeg,.jpg,.png" multiple hidden
+                                :disabled="reply.processing || sending || Boolean(replyBlockedReason)" @change="selectFile">
                             <button ref="attachButton" type="button" class="ui-button ui-button-icon"
                                 :aria-label="page.props.labels.converse_attach_file" :title="page.props.labels.converse_attach_file"
                                 :disabled="reply.processing || Boolean(replyBlockedReason)" @click="filePicker?.click()">
@@ -407,7 +480,7 @@ function threadUrl(id) {
                             </button>
                         </div>
                         <button v-if="!replyBlockedReason" type="submit" class="ui-button ui-button-primary ms-auto shrink-0"
-                            :disabled="reply.processing || (!reply.body.trim() && !hasAttachment)">
+                            :disabled="reply.processing || sending || (!reply.body.trim() && !hasAttachment)">
                             {{ page.props.labels.reply_send }}
                         </button>
                     </div>

@@ -2,6 +2,7 @@
 import { Head, Link, useForm, useHttp, usePage } from '@inertiajs/vue3';
 import { computed, ref } from 'vue';
 import FormField from '../../components/ui-kit/FormField.vue';
+import SecretField from '../../components/ui-kit/SecretField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
 
@@ -111,18 +112,15 @@ async function run() {
                         <input v-model="providers.openai_model" v-bind="attrs" class="ui-input" maxlength="255">
                     </FormField>
                     <FormField v-slot="attrs" :label="page.props.labels.ai_openai_key" :error="providers.errors.openai_key">
-                        <input
-                            v-model="providers.openai_key"
+                        <SecretField
                             v-bind="attrs"
-                            type="password"
-                            autocomplete="new-password"
-                            maxlength="4096"
-                            class="ui-input placeholder:text-muted"
+                            :model-value="providers.openai_key"
                             :placeholder="providers.remove_openai_key
                                 ? page.props.labels.send_token_pending_removal
-                                : providerSettings.has_openai_key ? `•••••••• · ${page.props.labels.send_token_saved}` : page.props.labels.send_token_empty"
+                                : providerSettings.has_openai_key ? `•••••••· ${page.props.labels.send_token_saved}` : page.props.labels.send_token_empty"
                             :disabled="providers.remove_openai_key"
-                        >
+                            @update:model-value="providers.openai_key = $event"
+                        />
                     </FormField>
                     <label v-if="providerSettings.has_openai_key" class="flex items-center gap-2 text-xs sm:col-span-2">
                         <input v-model="providers.remove_openai_key" type="checkbox" class="accent-brand" @change="providers.openai_key = ''">

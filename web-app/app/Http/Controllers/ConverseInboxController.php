@@ -92,6 +92,14 @@ class ConverseInboxController extends Controller
         }
 
         $canManage = $request->user()->can(WorkspacePermission::ManageConverseInbox->value);
+        // The full number is actionable for reply managers only; viewers keep the masked suffix.
+        if (! $canManage) {
+            foreach ([...$conversations->items(), $thread] as $row) {
+                if ($row !== null) {
+                    unset($row->contact_phone);
+                }
+            }
+        }
         $channelId = $thread?->channel_account_id;
         if ($thread) {
             $thread->memory = json_decode($thread->memory ?? '{}', true, flags: JSON_THROW_ON_ERROR);
@@ -223,6 +231,7 @@ class ConverseInboxController extends Controller
         $row->sender_photo = $profile['photo'] ?? null;
         $phone = $row->channel === 'whatsapp' ? WhatsAppRecipient::phone($row->contact_address) : null;
         $row->contact_suffix = $phone !== null ? substr($phone, -4) : null;
+        $row->contact_phone = $phone;
         unset($row->contact_address);
     }
 

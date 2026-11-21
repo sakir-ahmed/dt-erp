@@ -5,6 +5,7 @@ import AppIcon from '../../components/AppIcon.vue';
 import ChannelBrandIcon from '../../components/ChannelBrandIcon.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import FormField from '../../components/ui-kit/FormField.vue';
+import SecretField from '../../components/ui-kit/SecretField.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
@@ -89,6 +90,34 @@ function save() {
             </div>
         </div>
 
+        <details class="rounded-lg border border-line bg-surface">
+            <summary class="cursor-pointer px-3 py-2 text-sm font-semibold">{{ page.props.labels.channel_guide_title }}</summary>
+            <div class="grid gap-3 border-t border-line p-3 text-sm">
+                <p class="text-[13px] leading-relaxed">{{ page.props.labels.channel_guide_messenger }}</p>
+                <p class="text-[13px] leading-relaxed">{{ page.props.labels.channel_guide_whatsapp }}</p>
+                <div>
+                    <p class="text-xs font-semibold">{{ page.props.labels.channel_guide_env }}</p>
+                    <ul class="mt-1 grid gap-1 text-xs text-muted sm:grid-cols-2">
+                        <li><code class="rounded bg-page px-1">CONVERSE_OUTBOUND_ENABLED</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_GRAPH_VERSION</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_META_APP_SECRET</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_META_VERIFY_TOKEN</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_WHATSAPP_APP_SECRET</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_WHATSAPP_VERIFY_TOKEN</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_AI_AUTO_REPLY</code></li>
+                        <li><code class="rounded bg-page px-1">CONVERSE_AI_ALLOW_CLOUD</code></li>
+                    </ul>
+                </div>
+                <p class="text-xs">
+                    {{ page.props.labels.channel_guide_links }}
+                    <a class="text-brand underline" href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Graph API Explorer</a> ·
+                    <a class="text-brand underline" href="https://developers.facebook.com/tools/debug/accesstoken/" target="_blank" rel="noopener">Access Token Debugger</a> ·
+                    <a class="text-brand underline" href="https://business.facebook.com/settings/system-users" target="_blank" rel="noopener">Business System Users</a> ·
+                    <a class="text-brand underline" href="https://developers.facebook.com/docs/whatsapp/cloud-api/get-started" target="_blank" rel="noopener">WhatsApp Cloud API</a>
+                </p>
+            </div>
+        </details>
+
         <SlideOver v-if="open" :busy="form.processing" :title="page.props.labels[editing ? 'edit_channel' : 'add_channel']" :close-label="page.props.labels.close" @close="open = false">
             <form :id="formId" class="grid gap-3 sm:grid-cols-2" @submit.prevent="save">
                 <FormField v-slot="attrs" :label="page.props.labels.name" :error="form.errors.name" required>
@@ -112,18 +141,14 @@ function save() {
                 </p>
                 <div v-if="editing && canConfigureToken" class="grid gap-2 sm:col-span-2">
                     <FormField v-slot="attrs" :label="page.props.labels.send_token" :error="form.errors.send_token">
-                        <input
-                            :ref="(el) => inputs.send_token = el"
-                            v-bind="attrs"
-                            v-model="form.send_token"
-                            type="password"
-                            autocomplete="new-password"
-                            maxlength="4096"
-                            :placeholder="hasSendToken && !form.remove_send_token ? `•••••••• · ${tokenStatus}` : tokenStatus"
-                            :aria-describedby="[attrs['aria-describedby'], `${formId}-token-status`].filter(Boolean).join(' ')"
+                        <SecretField
+                            :ref="(el) => inputs.send_token = el?.$el?.querySelector('input') ?? null"
+                            :model-value="form.send_token"
+                            :placeholder="hasSendToken && !form.remove_send_token ? `•••••••· ${tokenStatus}` : tokenStatus"
                             :disabled="form.remove_send_token"
-                            class="ui-input placeholder:text-muted"
-                        >
+                            :aria-describedby="[attrs['aria-describedby'], `${formId}-token-status`].filter(Boolean).join(' ')"
+                            @update:model-value="form.send_token = $event"
+                        />
                         <span :id="`${formId}-token-status`" class="sr-only" role="status">{{ tokenStatus }}</span>
                     </FormField>
                     <label v-if="hasSendToken" class="flex items-center gap-2 text-xs">
