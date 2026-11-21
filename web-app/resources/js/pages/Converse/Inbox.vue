@@ -1,6 +1,6 @@
 <script setup>
 import { Head, Link, router, useForm, useHttp, usePage, usePoll } from '@inertiajs/vue3';
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import AppIcon from '../../components/AppIcon.vue';
 import ChannelBrandIcon from '../../components/ChannelBrandIcon.vue';
@@ -8,6 +8,7 @@ import ConverseContactAvatar from '../../components/ConverseContactAvatar.vue';
 import EmptyState from '../../components/ui-kit/EmptyState.vue';
 import PageHeader from '../../components/ui-kit/PageHeader.vue';
 import SearchBar from '../../components/ui-kit/SearchBar.vue';
+import SlideOver from '../../components/ui-kit/SlideOver.vue';
 import AdminLayout from '../../layouts/AdminLayout.vue';
 import { playConverseCue } from '../../lib/converseNotificationSounds';
 import { formatBytes, formatDhakaDateTime } from '../../lib/format';
@@ -20,6 +21,7 @@ const props = defineProps({
     channels: { type: Array, required: true },
     modes: { type: Array, required: true },
     statuses: { type: Array, required: true },
+    tags: { type: Array, default: () => [] },
     canManageInbox: Boolean,
     catalogAttachments: { type: Array, default: () => [] },
     canDraftReply: Boolean,
@@ -28,6 +30,7 @@ const props = defineProps({
 });
 
 const page = usePage();
+const formId = useId();
 const search = ref(props.filters.search);
 const channel = ref(props.filters.channel);
 const status = ref(props.filters.status);
@@ -244,6 +247,16 @@ function saveState() {
 
 watch(() => props.filters.channel, (value) => { channel.value = value; });
 watch(() => props.filters.status, (value) => { status.value = value; });
+watch(() => props.filters.tags, (value) => { tagFilter.value = [...(value ?? [])]; }, { immediate: true });
+
+const tagFilter = ref([...(props.filters.tags ?? [])]);
+
+function toggleTagFilter(name) {
+    tagFilter.value = tagFilter.value.includes(name)
+        ? tagFilter.value.filter((tag) => tag !== name)
+        : [...tagFilter.value, name];
+    filter();
+}
 
 function filter() {
     const term = search.value.trim();
@@ -251,11 +264,51 @@ function filter() {
         ...(term && { search: term }),
         ...(channel.value && { channel: channel.value }),
         ...(status.value && { status: status.value }),
+        ...(tagFilter.value.length && { tags: tagFilter.value }),
     }, {
         preserveState: true,
         preserveScroll: true,
         onStart: () => { searching.value = true; },
         onFinish: () => { searching.value = false; },
+    });
+}
+
+// Conversation tags: pick existing or type new ones, synced atomically.
+const tagForm = useForm({ tags: [] });
+const tagDraft = ref('');
+
+watch(() => props.thread?.id, () => {
+    tagForm.tags = [...(props.thread?.tags ?? [])];
+    tagDraft.value = '';
+    tagForm.clearErrors();
+});
+
+function addDraftTag() {
+    for (const name of tagDraft.value.split(',')) {
+        const tag = name.trim().slice(0, 60);
+        if (tag.length >= 2 && !tagForm.tags.includes(tag)) tagForm.tags.push(tag);
+    }
+    tagDraft.value = '';
+}
+
+function saveTags() {
+    tagForm.put(`/converse/inbox/${props.thread.id}/tags`, { preserveScroll: true });
+}
+
+// Broadcast: one staff message to every conversation carrying all selected tags.
+const broadcastOpen = ref(false);
+const broadcastForm = useForm({ tags: [], channel: 'all', body: '' });
+
+function toggleBroadcastTag(name) {
+    broadcastForm.tags = broadcastForm.tags.includes(name)
+        ? broadcastForm.tags.filter((tag) => tag !== name)
+        : [...broadcastForm.tags, name];
+}
+
+function sendBroadcast() {
+    broadcastForm.post('/converse/inbox/broadcast', {
+        preserveScroll: true,
+        onSuccess: () => { broadcastOpen.value = false; },
     });
 }
 
@@ -302,6 +355,18 @@ function threadUrl(id) {
                         <option v-for="value in statuses" :key="value" :value="value">{{ page.props.labels[`status_${value}`] }}</option>
                     </select>
                 </div>
+                <div v-if="tags.length" class="flex flex-wrap gap-1.5 border-b border-line p-3">
+                    <button v-for="tag in tags" :key="tag.id" type="button"
+                        class="rounded-full px-2 py-0.5 text-xs transition-colors"
+                        :class="tagFilter.includes(tag.name) ? 'bg-brand text-on-brand' : 'bg-page text-muted hover:text-ink'"
+                        :aria-pressed="tagFilter.includes(tag.name)"
+                        @click="toggleTagFilter(tag.name)">
+                        {{ tag.name }} <span class="opacity-70">{{ tag.conversations_count }}</span>
+                    </button>
+                </div>
+                <div v-if="canManageInbox" class="border-b border-line p-3">
+                    <button type="button" class="ui-button w-full" @click="broadcastOpen = true">{{ page.props.labels.broadcast_title }}</button>
+                </div>
                 <ul v-if="conversations.data.length" class="divide-y divide-line">
                     <li v-for="row in conversations.data" :key="row.id">
                         <Link :href="threadUrl(row.id)" :aria-current="thread?.id === row.id ? 'page' : undefined"
@@ -315,6 +380,9 @@ function threadUrl(id) {
                                         <ChannelBrandIcon :channel="row.channel" class="h-4 w-4 shrink-0" :title="page.props.labels[row.channel] ?? row.channel" />
                                         <span class="sr-only">{{ page.props.labels[row.channel] ?? row.channel }}</span>
                                     </span>
+                                </span>
+                                <span v-if="row.tags?.length" class="mt-1 flex flex-wrap gap-1">
+                                    <span v-for="name in row.tags" :key="name" class="rounded-full bg-page px-1.5 text-[11px] leading-5 text-muted">{{ name }}</span>
                                 </span>
                                 <span class="mt-1 block text-xs text-muted">{{ row.account }} · {{ formatDhakaDateTime(row.last_message_at, page.props.locale) }}</span>
                             </span>
@@ -360,6 +428,18 @@ function threadUrl(id) {
                         </div>
                     </div>
                     <p v-if="!canManageInbox" class="mt-1 text-xs text-muted">{{ page.props.labels[`status_${thread.status}`] }} · {{ page.props.labels[`mode_${thread.mode}`] }}</p>
+                    <form v-if="canManageInbox" class="mt-2 flex flex-wrap items-center gap-1.5" @submit.prevent="addDraftTag">
+                        <span v-for="name in tagForm.tags" :key="name" class="flex items-center gap-1 rounded-full bg-page px-2 py-0.5 text-xs text-muted">
+                            {{ name }}
+                            <button type="button" class="text-muted hover:text-danger" :aria-label="page.props.labels.tag_remove.replace(':tag', name)" @click="tagForm.tags = tagForm.tags.filter((tag) => tag !== name)">×</button>
+                        </span>
+                        <input v-model="tagDraft" class="ui-input h-7 w-32 text-xs" maxlength="120"
+                            :placeholder="page.props.labels.tag_new" :aria-label="page.props.labels.tag_new"
+                            @keydown.enter.prevent="addDraftTag" @blur="addDraftTag">
+                        <button type="button" class="ui-button text-xs" :disabled="tagForm.processing || JSON.stringify(tagForm.tags) === JSON.stringify(thread.tags)" @click="saveTags">
+                            {{ page.props.labels.tag_save }}
+                        </button>
+                    </form>
                     <details v-if="Object.keys(thread.memory ?? {}).length || thread.language_preference" class="mt-2 text-xs text-muted">
                         <summary class="cursor-pointer">{{ page.props.labels.ai_conversation_memory }}</summary>
                         <p v-if="thread.language_preference">{{ page.props.labels.ai_customer_language }} · {{ thread.language_preference }}</p>
@@ -490,5 +570,43 @@ function threadUrl(id) {
                 <EmptyState icon="inbox" :title="page.props.labels.select_conversation" />
             </div>
         </div>
+
+        <SlideOver v-if="broadcastOpen" :title="page.props.labels.broadcast_title" :close-label="page.props.labels.close" :busy="broadcastForm.processing" @close="broadcastOpen = false">
+            <form :id="`${formId}-broadcast`" class="grid gap-3" @submit.prevent="sendBroadcast">
+                <p class="text-xs text-muted">{{ page.props.labels.broadcast_help }}</p>
+                <fieldset class="grid gap-1.5">
+                    <legend class="text-sm font-medium">{{ page.props.labels.broadcast_tags }}</legend>
+                    <div v-if="tags.length" class="flex flex-wrap gap-1.5">
+                        <button v-for="tag in tags" :key="tag.id" type="button"
+                            class="rounded-full px-2 py-0.5 text-xs"
+                            :class="broadcastForm.tags.includes(tag.name) ? 'bg-brand text-on-brand' : 'bg-page text-muted'"
+                            :aria-pressed="broadcastForm.tags.includes(tag.name)"
+                            @click="toggleBroadcastTag(tag.name)">
+                            {{ tag.name }} <span class="opacity-70">{{ tag.conversations_count }}</span>
+                        </button>
+                    </div>
+                    <p v-else class="text-xs text-muted">{{ page.props.labels.broadcast_no_tags }}</p>
+                </fieldset>
+                <label class="grid gap-1 text-sm font-medium">
+                    {{ page.props.labels.broadcast_channel }}
+                    <select v-model="broadcastForm.channel" class="ui-input">
+                        <option value="all">{{ page.props.labels.all_channels }}</option>
+                        <option v-for="type in channels" :key="type" :value="type">{{ page.props.labels[type] }}</option>
+                    </select>
+                </label>
+                <label class="grid gap-1 text-sm font-medium">
+                    {{ page.props.labels.reply_body }}
+                    <textarea v-model="broadcastForm.body" rows="4" maxlength="2000" required class="w-full rounded-md border border-line bg-page p-2 text-[13px]" />
+                </label>
+                <p class="text-xs text-muted">{{ page.props.labels.broadcast_window_help }}</p>
+                <p v-if="broadcastForm.hasErrors" role="alert" class="text-xs text-danger">{{ Object.values(broadcastForm.errors)[0] }}</p>
+            </form>
+            <template #footer>
+                <button type="button" class="ui-button" :disabled="broadcastForm.processing" @click="broadcastOpen = false">{{ page.props.labels.cancel }}</button>
+                <button type="submit" :form="`${formId}-broadcast`" class="ui-button ui-button-primary" :disabled="broadcastForm.processing || !broadcastForm.tags.length || !broadcastForm.body.trim()">
+                    {{ page.props.labels.broadcast_send }}
+                </button>
+            </template>
+        </SlideOver>
     </AdminLayout>
 </template>

@@ -13,6 +13,7 @@ use App\Actions\SendConverseReply;
 use App\Actions\WhatsAppRecipient;
 use App\Enums\WorkspacePermission;
 use App\Jobs\RefreshConverseMessengerProfile;
+use App\Jobs\SendConverseBroadcast;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -20,6 +21,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -43,6 +45,7 @@ class ConverseInboxController extends Controller
         $channel = in_array($channel, self::CHANNELS, true) ? $channel : '';
         $status = $request->query('status');
         $status = in_array($status, self::STATUSES, true) ? $status : '';
+        $tags = $this->tagFilter($request);
         $scope = $this->scope($request);
 
         $thread = $conversation === null ? null : (clone $scope)->where('conversations.id', $conversation)->addSelect('accounts.id as channel_account_id', 'conversations.memory', 'contacts.language_preference')->first();
@@ -51,6 +54,7 @@ class ConverseInboxController extends Controller
         $conversations = (clone $scope)
             ->when($status !== '', fn (Builder $query) => $query->where('conversations.status', $status))
             ->when($channel !== '', fn (Builder $query) => $query->where('accounts.type', $channel))
+            ->when($tags !== [], fn (Builder $query) => $this->whereAllTags($query, $tags))
             ->when($search !== '', fn (Builder $query) => $query->where(function (Builder $query) use ($search): void {
                 $query->whereLike('contacts.name', "%{$search}%")
                     ->orWhereLike('accounts.name', "%{$search}%")
@@ -76,9 +80,11 @@ class ConverseInboxController extends Controller
         $demo = (bool) $request->user()->is_demo;
         $selectedProfile = $thread && $thread->channel === 'messenger' && ! $demo ? $profile((int) $thread->id) : [];
         $cachedProfiles = $demo ? [] : $profile->cached(collect($conversations->items())->pluck('id')->all());
+        $conversationTags = $this->conversationTags(array_merge([$thread?->id], collect($conversations->items())->pluck('id')->all()));
         $refresh = null;
         foreach ($conversations->items() as $row) {
             $row->last_message_at = Carbon::parse($row->last_message_at)->toISOString();
+            $row->tags = $conversationTags[$row->id] ?? [];
             if (array_key_exists($row->id, $cachedProfiles) && $cachedProfiles[$row->id] === null) {
                 $refresh ??= (int) $row->id;
             }
@@ -89,6 +95,7 @@ class ConverseInboxController extends Controller
         }
         if ($thread) {
             $this->applyContactProfile($thread, $selectedProfile);
+            $thread->tags = $conversationTags[$thread->id] ?? [];
         }
 
         $canManage = $request->user()->can(WorkspacePermission::ManageConverseInbox->value);
@@ -115,10 +122,19 @@ class ConverseInboxController extends Controller
             'conversations' => $conversations,
             'thread' => $thread,
             'messages' => $messages,
-            'filters' => ['search' => $search, 'channel' => $channel, 'status' => $status],
+            'filters' => ['search' => $search, 'channel' => $channel, 'status' => $status, 'tags' => $tags],
             'channels' => self::CHANNELS,
             'modes' => self::MODES,
             'statuses' => self::STATUSES,
+            'tags' => fn () => DB::table('cv_conversation_tags as tag')
+                ->join('cv_conversation_tag as pivot', 'pivot.tag_id', '=', 'tag.id')
+                ->join('cv_conversations as conversations', 'conversations.id', '=', 'pivot.conversation_id')
+                ->join('cv_contact_identities as identities', 'identities.id', '=', 'conversations.contact_identity_id')
+                ->join('cv_channel_accounts as accounts', 'accounts.id', '=', 'identities.channel_account_id')
+                ->where('accounts.is_demo', $demo)
+                ->groupBy('tag.id', 'tag.name')
+                ->orderBy('tag.name')
+                ->get(['tag.id', 'tag.name', DB::raw('count(distinct pivot.conversation_id) as conversations_count')]),
             'canManageInbox' => $canManage,
             'catalogAttachments' => $canManage && $thread ? $this->assets->catalog($this->aiSettings->channel((int) $channelId)['collections'] ?? [])
                 ->orderBy('asset.title')->limit(100)->get(['asset.id', 'asset.title']) : [],
@@ -223,6 +239,123 @@ class ConverseInboxController extends Controller
         return Storage::disk('local')->download($asset->path, $asset->name, [
             'Content-Type' => $asset->mime, 'X-Content-Type-Options' => 'nosniff', 'Cache-Control' => 'private, no-store',
         ]);
+    }
+
+    /**
+     * Replace the thread's tags; unknown names are created on the fly.
+     */
+    public function syncTags(Request $request, RecordConverseAudit $audit, int $conversation): RedirectResponse
+    {
+        $data = $request->validate([
+            'tags' => ['present', 'array', 'max:20'],
+            'tags.*' => ['required', 'string', 'min:2', 'max:60'],
+        ]);
+        $names = collect($data['tags'])->map(fn (string $name): string => mb_substr(trim($name), 0, 60))->filter()->unique()->values();
+
+        $changes = DB::transaction(function () use ($request, $audit, $conversation, $names): array {
+            $thread = $this->scope($request)->where('conversations.id', $conversation)->lockForUpdate()->first();
+            abort_if($thread === null, 404);
+
+            $tagIds = $names->map(function (string $name) use ($request): int {
+                $id = DB::table('cv_conversation_tags')->where('name', $name)->value('id');
+
+                return (int) ($id ?? DB::table('cv_conversation_tags')->insertGetId([
+                    'name' => $name, 'created_by' => $request->user()->id,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]));
+            });
+
+            DB::table('cv_conversation_tag')->where('conversation_id', $conversation)
+                ->whereNotIn('tag_id', $tagIds)->delete();
+            foreach ($tagIds as $tagId) {
+                DB::table('cv_conversation_tag')->insertOrIgnore(['conversation_id' => $conversation, 'tag_id' => $tagId]);
+            }
+
+            $previous = DB::table('cv_conversation_tag as pivot')->join('cv_conversation_tags as tag', 'tag.id', '=', 'pivot.tag_id')
+                ->where('pivot.conversation_id', $conversation)->orderBy('tag.name')->pluck('tag.name')->all();
+            $audit($request->user()->id, 'conversation.tags_synced', 'conversation', $conversation, ['from' => $previous, 'to' => $names->all()]);
+
+            return ['from' => $previous, 'to' => $names->all()];
+        });
+
+        if ($changes['from'] !== $changes['to']) {
+            Inertia::flash('success', __('workspace.conversation_tags_updated'));
+        }
+
+        return back(fallback: route('converse.inbox', $conversation));
+    }
+
+    /**
+     * Queue one staff message for every conversation carrying all the chosen
+     * tags (optionally restricted to a channel) inside the reply window.
+     */
+    public function broadcast(Request $request, RecordConverseAudit $audit): RedirectResponse
+    {
+        $data = $request->validate([
+            'tags' => ['required', 'array', 'min:1', 'max:10'],
+            'tags.*' => ['required', 'string', 'min:2', 'max:60'],
+            'channel' => ['required', Rule::in([...self::CHANNELS, 'all'])],
+            'body' => ['required', 'string', 'min:1', 'max:2000'],
+        ]);
+
+        $recipients = $this->whereAllTags($this->scope($request)
+            ->where('accounts.enabled', true)->whereNull('contacts.opted_out_at')
+            ->whereNotIn('conversations.status', ['resolved'])
+            ->when($data['channel'] !== 'all', fn (Builder $query) => $query->where('accounts.type', $data['channel']))
+            ->whereExists(fn (Builder $query) => $query->selectRaw('1')->from('cv_messages')
+                ->whereColumn('cv_messages.conversation_id', 'conversations.id')
+                ->where('cv_messages.direction', 'in')
+                ->where('cv_messages.occurred_at', '>', now()->subDay())), $data['tags'])
+            ->get(['conversations.id']);
+
+        $ids = array_slice($recipients->pluck('id')->map(fn ($id): int => (int) $id)->all(), 0, 500);
+
+        foreach ($ids as $id) {
+            SendConverseBroadcast::dispatch($request->user()->id, $id, (string) Str::uuid(), $data['body'])->onQueue('default');
+        }
+        $audit($request->user()->id, 'conversation.broadcast_queued', 'conversation', 0, [
+            'tags' => $data['tags'], 'channel' => $data['channel'], 'recipients' => count($ids),
+        ]);
+        Inertia::flash('success', __('workspace.broadcast_queued', ['count' => count($ids)]));
+
+        return back(fallback: route('converse.inbox'));
+    }
+
+    /** @return array<int, string> */
+    private function tagFilter(Request $request): array
+    {
+        $tags = $request->query('tags', []);
+        $tags = is_string($tags) ? explode(',', $tags) : (is_array($tags) ? $tags : []);
+
+        return collect($tags)->filter(fn ($tag): bool => is_string($tag) && mb_strlen(trim($tag)) >= 2 && mb_strlen($tag) <= 60)
+            ->map(fn (string $tag): string => mb_substr(trim($tag), 0, 60))->unique()->values()->take(10)->all();
+    }
+
+    private function whereAllTags(Builder $query, array $tags): Builder
+    {
+        foreach ($tags as $tag) {
+            $query->whereExists(fn (Builder $pivot) => $pivot->selectRaw('1')
+                ->from('cv_conversation_tag as pivot')
+                ->join('cv_conversation_tags as tag', 'tag.id', '=', 'pivot.tag_id')
+                ->whereColumn('pivot.conversation_id', 'conversations.id')
+                ->where('tag.name', $tag));
+        }
+
+        return $query;
+    }
+
+    /** @return array<int, array<int, string>> */
+    private function conversationTags(array $conversationIds): array
+    {
+        $ids = array_values(array_filter(array_map('intval', $conversationIds)));
+        if ($ids === []) {
+            return [];
+        }
+
+        return DB::table('cv_conversation_tag as pivot')->join('cv_conversation_tags as tag', 'tag.id', '=', 'pivot.tag_id')
+            ->whereIn('pivot.conversation_id', $ids)->orderBy('tag.name')
+            ->get(['pivot.conversation_id', 'tag.name'])
+            ->groupBy('conversation_id')->map(fn ($rows) => $rows->pluck('name')->all())->all();
     }
 
     private function applyContactProfile(object $row, array $profile): void

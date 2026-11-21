@@ -255,6 +255,67 @@ class SendConverseReply
         return $this->blockedReason($this->thread($user, $conversation, lock: false), $conversation);
     }
 
+    /**
+     * Staff-initiated broadcast to one conversation: the manual mode gate is
+     * replaced by the caller's explicit selection, every other safety gate
+     * (channel token, opt-out, 24 hour window) still applies.
+     */
+    public function broadcast(User $user, int $conversation, string $operationId, string $body): string
+    {
+        $attempt = DB::transaction(function () use ($user, $conversation, $operationId, $body): ?object {
+            $thread = $this->thread($user, $conversation);
+            if (DB::table('cv_messages')->where('conversation_id', $conversation)->where('operation_id', $operationId)->exists()
+                || $this->blockedReason($thread, $conversation, context: 'broadcast') !== null) {
+                return null;
+            }
+
+            $id = DB::table('cv_messages')->insertGetId([
+                'conversation_id' => $conversation,
+                'operation_id' => $operationId,
+                'delivery_status' => 'sending',
+                'sent_by' => $user->id,
+                'direction' => 'out',
+                'sender_type' => 'human',
+                'body' => $body,
+                'occurred_at' => now(),
+            ]);
+
+            return (object) ['id' => $id];
+        });
+
+        if ($attempt === null) {
+            return 'skipped';
+        }
+
+        return DB::transaction(function () use ($attempt, $user, $conversation, $body, $operationId): string {
+            $thread = $this->thread($user, $conversation);
+            $status = 'failed';
+            $externalId = null;
+            if ($this->blockedReason($thread, $conversation, context: 'broadcast') === null) {
+                try {
+                    [$status, $externalId] = $this->send($thread, $body, $operationId, null);
+                } catch (ConnectionException) {
+                    $status = 'unknown';
+                } catch (DecryptException) {
+                    $status = 'failed';
+                }
+            }
+
+            DB::table('cv_messages')->where('id', $attempt->id)->where('delivery_status', 'sending')->update([
+                'delivery_status' => $status,
+                'external_id' => $externalId,
+            ]);
+
+            if ($status === 'accepted') {
+                $now = now();
+                DB::table('cv_conversations')->where('id', $conversation)->where('last_message_at', '<', $now)
+                    ->update(['last_message_at' => $now, 'updated_at' => $now]);
+            }
+
+            return $status;
+        });
+    }
+
     private function thread(?User $user, int $id, bool $lock = true): object
     {
         $query = DB::table('cv_conversations as thread')
@@ -272,7 +333,7 @@ class SendConverseReply
         return $thread;
     }
 
-    private function blockedReason(object $thread, int $conversation, bool $automatic = false): ?string
+    private function blockedReason(object $thread, int $conversation, bool $automatic = false, string $context = 'manual'): ?string
     {
         if ($thread->is_demo || ! $thread->enabled || ! $thread->send_token
             || config('converse.outbound_enabled') !== true || ! in_array($thread->type, ['messenger', 'whatsapp'], true)) {
@@ -284,8 +345,12 @@ class SendConverseReply
             return 'reply_whatsapp_invalid_recipient';
         }
 
-        if ($thread->mode !== ($automatic ? 'ai' : 'human') || $thread->status === 'resolved'
-            || ($automatic && $thread->status === 'snoozed')) {
+        // Broadcasts are explicitly chosen by staff; the handling mode must
+        // not veto them, but a resolved thread stays closed.
+        if ($context !== 'broadcast' && ($thread->mode !== ($automatic ? 'ai' : 'human') || $thread->status === 'resolved')) {
+            return 'reply_requires_human';
+        }
+        if ($context === 'broadcast' && $thread->status === 'resolved') {
             return 'reply_requires_human';
         }
 
