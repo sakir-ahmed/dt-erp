@@ -152,7 +152,7 @@ function saveCollectionForm() {
 
 // Test chat: ask against one collection or all collections and inspect the
 // grounded answer; unexpected replies become trained corrections.
-const chat = useHttp({ collection: null, message: '' });
+const chat = useHttp({ collection: null, message: '', history: [] });
 const chatScope = ref('all');
 const chatMessage = ref('');
 const chatBusy = ref(false);
@@ -165,6 +165,10 @@ async function askChat() {
     if (!message || chatBusy.value) return;
     chatBusy.value = true;
     chatError.value = false;
+    chat.history = chatTranscript.value.slice(-10).map((item) => ({
+        direction: item.role === 'user' ? 'in' : 'out',
+        body: (item.messages ?? [item.body]).join('\n\n').slice(0, 2000),
+    }));
     chatTranscript.value.push({ role: 'user', body: message, at: new Date().toISOString() });
     chatMessage.value = '';
     try {
@@ -180,20 +184,28 @@ async function askChat() {
     }
 }
 
-const correctionForm = useForm({ collection_id: null, question: '', answer: '' });
+const correctionForm = useForm({ collection_id: null, question: '', answer: '', follow_up: '', catalog_attachment_id: null });
 const correctionPanel = ref(false);
+const editingCorrection = ref(null);
 const correctionAction = useForm({});
+const correctionAttachments = computed(() => correctionForm.collection_id === props.collection?.id
+    ? props.outboundAssets.filter((asset) => asset.approved) : []);
 
-function trainCorrection(question) {
+function trainCorrection(question, item = null) {
     correctionForm.reset();
     correctionForm.clearErrors();
-    correctionForm.question = question;
-    correctionForm.collection_id = props.collection?.id ?? null;
+    editingCorrection.value = item?.id ?? null;
+    correctionForm.question = item?.question ?? question;
+    correctionForm.collection_id = item ? item.collection_id : (props.collection?.id ?? null);
+    correctionForm.answer = item?.answer ?? '';
+    correctionForm.follow_up = item?.follow_up ?? '';
+    correctionForm.catalog_attachment_id = item?.catalog_attachment_id ?? null;
     correctionPanel.value = true;
 }
 
 function saveCorrection() {
-    correctionForm.post('/converse/knowledge/corrections', {
+    const path = '/converse/knowledge/corrections';
+    correctionForm.submit(editingCorrection.value ? 'patch' : 'post', editingCorrection.value ? path + '/' + editingCorrection.value : path, {
         preserveScroll: true,
         onSuccess: () => { correctionPanel.value = false; },
     });
@@ -281,7 +293,7 @@ function save() {
                 <label class="text-xs font-medium">
                     {{ labels.knowledge_chat_scope }}
                     <select v-model="chatScope" class="ui-input mt-1 block" :disabled="chatBusy">
-                        <option value="all">{{ labels.knowledge_chat_all_collections }}</option>
+                        <option value="all">{{ labels.knowledge_chat_automatic }}</option>
                         <option v-for="row in collections.data" :key="row.id" :value="String(row.id)">{{ row.name }}</option>
                     </select>
                 </label>
@@ -291,11 +303,15 @@ function save() {
                 <template v-for="(item, index) in chatTranscript" :key="index">
                     <p v-if="item.role === 'user'" class="ms-auto w-fit max-w-[85%] whitespace-pre-wrap wrap-anywhere rounded-lg bg-selected p-2.5 text-[13px]">{{ item.body }}</p>
                     <div v-else class="w-fit max-w-[85%] rounded-lg bg-page p-2.5">
-                        <p class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ item.body }}</p>
+                        <div class="space-y-2">
+                            <p v-for="(message, part) in item.messages ?? [item.body]" :key="part" class="whitespace-pre-wrap wrap-anywhere text-[13px]">{{ message }}</p>
+                            <p v-if="item.attachment" class="rounded-md border border-line px-2 py-1 text-xs">{{ labels.knowledge_reply_attachment }} {{ item.attachment }}</p>
+                        </div>
                         <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
                             <span class="rounded-full px-2 py-0.5" :class="item.decision === 'send' ? 'bg-success/10 text-success' : 'bg-page'">{{ labels[`knowledge_chat_${item.decision}`] }}</span>
                             <span v-if="item.correction" class="rounded-full bg-brand/10 px-2 py-0.5 text-brand">{{ labels.knowledge_correction_badge }}</span>
                             <span v-else-if="item.provider">{{ item.provider }}<template v-if="item.model"> · {{ item.model }}</template></span>
+                            <span v-if="item.scope" class="rounded-full bg-selected px-2 py-0.5">{{ item.scope.label ?? labels.knowledge_chat_all_collections }}</span>
                             <span v-for="source in item.sources" :key="source.id" class="rounded-full bg-page px-2 py-0.5">{{ source.title }}</span>
                             <span>· {{ formatDhakaDateTime(item.at, page.props.locale) }}</span>
                         </p>
@@ -326,12 +342,14 @@ function save() {
                     <div class="min-w-0">
                         <p class="wrap-anywhere text-sm font-medium">{{ item.question }}</p>
                         <p class="wrap-anywhere mt-0.5 text-xs text-muted">{{ item.answer }}</p>
+                        <p v-if="item.follow_up" class="mt-1 wrap-anywhere text-xs">{{ item.follow_up }}</p>
                         <p class="mt-1 text-xs text-muted">
                             <span class="rounded-full px-2 py-0.5" :class="item.enabled ? 'bg-success/10 text-success' : 'bg-page'">{{ labels[item.enabled ? 'enabled' : 'disabled'] }}</span>
                             · {{ item.collection_id ? (collections.data.find(({ id }) => id === item.collection_id)?.name ?? labels.knowledge_collection_scope) : labels.knowledge_correction_global }}
                         </p>
                     </div>
                     <div class="flex shrink-0 gap-2">
+                        <button type="button" class="ui-button" @click="trainCorrection('', item)">{{ labels.knowledge_edit_correction }}</button>
                         <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="toggleCorrection(item)">{{ labels[item.enabled ? 'disable' : 'enable'] }}</button>
                         <button type="button" class="ui-button" :disabled="correctionAction.processing" @click="deleteCorrection(item)">{{ labels.delete }}</button>
                     </div>
@@ -412,10 +430,21 @@ function save() {
                 <FormField v-slot="attrs" :label="labels.knowledge_correction_answer" :error="correctionForm.errors.answer" required>
                     <textarea v-bind="attrs" v-model="correctionForm.answer" rows="4" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
                 </FormField>
+                <FormField v-slot="attrs" :label="labels.knowledge_reply_follow_up" :error="correctionForm.errors.follow_up">
+                    <textarea v-bind="attrs" v-model="correctionForm.follow_up" rows="2" maxlength="2000" class="w-full rounded-md border border-line bg-page p-2 text-sm" />
+                </FormField>
                 <FormField v-slot="attrs" :label="labels.knowledge_correction_scope">
-                    <select v-bind="attrs" v-model="correctionForm.collection_id" class="ui-input">
+                    <select v-bind="attrs" v-model="correctionForm.collection_id" class="ui-input" :disabled="Boolean(editingCorrection)"
+                        @change="correctionForm.catalog_attachment_id = null">
                         <option :value="null">{{ labels.knowledge_correction_global }}</option>
                         <option v-for="row in collections.data" :key="row.id" :value="row.id">{{ row.name }}</option>
+                    </select>
+                </FormField>
+                <FormField v-if="correctionAttachments.length || correctionForm.catalog_attachment_id" v-slot="attrs"
+                    :label="labels.knowledge_reply_attachment" :error="correctionForm.errors.catalog_attachment_id">
+                    <select v-bind="attrs" v-model="correctionForm.catalog_attachment_id" class="ui-input">
+                        <option :value="null">{{ labels.knowledge_reply_no_attachment }}</option>
+                        <option v-for="asset in correctionAttachments" :key="asset.id" :value="asset.id">{{ asset.title }}</option>
                     </select>
                 </FormField>
             </form>
@@ -481,13 +510,14 @@ function save() {
                         <textarea v-if="field === 'body'" v-bind="attrs" v-model="entryForm[field]" rows="4" maxlength="12000" class="w-full rounded-md border border-line bg-surface p-2 text-sm" />
                         <input v-else v-bind="attrs" v-model="entryForm[field]" class="ui-input" :type="field === 'title' ? 'text' : 'date'" :maxlength="field === 'title' ? 255 : undefined">
                     </FormField>
+                    <FormField v-if="commercial || entryForm.kind === 'faq'" v-slot="attrs" :label="labels.knowledge_subject"
+                        :error="form.errors.subject_id" :required="commercial">
+                        <select v-bind="attrs" v-model="entryForm.subject_id" class="ui-input">
+                            <option value="" :disabled="commercial">{{ labels.knowledge_collection_scope }}</option>
+                            <option v-for="subject in subjects" :key="subject.id" :value="subject.id">{{ subject.title }}</option>
+                        </select>
+                    </FormField>
                     <template v-if="commercial">
-                        <FormField v-slot="attrs" :label="labels.knowledge_subject" :error="form.errors.subject_id" required>
-                            <select v-bind="attrs" v-model="entryForm.subject_id" class="ui-input">
-                                <option value="" disabled>{{ labels.knowledge_subject }}</option>
-                                <option v-for="subject in subjects" :key="subject.id" :value="subject.id">{{ subject.title }}</option>
-                            </select>
-                        </FormField>
                         <FormField v-slot="attrs" :label="labels.knowledge_amount_type" :error="form.errors.amount_type" required>
                             <select v-bind="attrs" v-model="entryForm.amount_type" class="ui-input"><option v-for="type in types" :key="type" :value="type">{{ labels[`amount_${type}`] }}</option></select>
                         </FormField>

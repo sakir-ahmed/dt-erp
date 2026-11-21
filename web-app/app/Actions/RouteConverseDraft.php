@@ -10,7 +10,7 @@ class RouteConverseDraft
     public function __construct(private ConverseAiSettings $configuration) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null): ?array
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null): ?array
     {
         $settings = $this->configuration->get();
         $cloudAllowed = ! $localOnly && $settings['allow_cloud'] === true;
@@ -24,15 +24,20 @@ class RouteConverseDraft
             $brains[] = ['ollama', $localFallback];
         }
 
+        $deadline = $localBudget === null ? null : hrtime(true) + $localBudget * 1_000_000_000;
         foreach ($brains as $index => [$provider, $model]) {
             if (! is_string($model) || trim($model) === '') {
                 continue;
             }
 
+            $timeout = $deadline === null ? 45 : min(45, ($deadline - hrtime(true)) / 1_000_000_000);
+            if ($timeout <= 0) {
+                return null;
+            }
             try {
                 $text = $provider === 'openai'
                     ? $this->openAi($model, $instructions, $input, $settings['openai_key'])
-                    : $this->ollama($model, $instructions, $input, (int) $settings['ollama_port'], $accept !== null);
+                    : $this->ollama($model, $instructions, $input, (int) $settings['ollama_port'], $accept !== null, $timeout);
             } catch (ConnectionException) {
                 continue;
             }
@@ -45,7 +50,7 @@ class RouteConverseDraft
         return null;
     }
 
-    private function ollama(string $model, string $instructions, string $input, int $port, bool $structured): ?string
+    private function ollama(string $model, string $instructions, string $input, int $port, bool $structured, float $timeout): ?string
     {
         // Accept only a bare, installed model name. Cloud-backed and registry references are excluded.
         if (! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model) || str_contains(strtolower($model), 'cloud')) {
@@ -58,7 +63,7 @@ class RouteConverseDraft
 
         $response = Http::asJson()->acceptJson()->withoutRedirecting()
             // CPU-only inference of small local models can exceed 12s under load.
-            ->connectTimeout(3)->timeout(45)
+            ->connectTimeout(3)->timeout($timeout)
             ->post("http://127.0.0.1:{$port}/api/chat", [
                 'model' => $model,
                 'stream' => false,

@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Exists;
 use Inertia\Inertia;
 use Inertia\Response;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -43,7 +44,7 @@ class ConverseKnowledgeController extends Controller
             'corrections' => $collection ? DB::table('cv_knowledge_corrections')
                 ->where(fn (Builder $query) => $query->whereNull('collection_id')->orWhere('collection_id', $collection->id))
                 ->orderByRaw('collection_id is null')->orderByDesc('id')->limit(50)
-                ->get(['id', 'collection_id', 'question', 'answer', 'enabled']) : [],
+                ->get(['id', 'collection_id', 'question', 'answer', 'follow_up', 'catalog_attachment_id', 'enabled']) : [],
             'subjects' => $collection ? DB::table('cv_knowledge_entries')->where('collection_id', $collection->id)
                 ->whereIn('kind', ['product', 'service'])->orderBy('title')->get(['id', 'title']) : [],
             'kinds' => self::KINDS,
@@ -94,7 +95,7 @@ class ConverseKnowledgeController extends Controller
             'language' => ['required', Rule::in(['en', 'bn', 'banglish'])],
             'title' => ['required', 'string', 'max:255'],
             'body' => ['nullable', 'string', 'max:12000'],
-            'subject_id' => [Rule::excludeIf(! $commercial), 'required', 'integer',
+            'subject_id' => [Rule::excludeIf(! $commercial && $kind !== 'faq'), $commercial ? 'required' : 'nullable', 'integer',
                 Rule::exists('cv_knowledge_entries', 'id')->where(fn (Builder $query) => $query
                     ->where('collection_id', $collection)->whereIn('kind', ['product', 'service']))],
             'amount_type' => [Rule::excludeIf(! $commercial), 'required', Rule::in($amountTypes)],
@@ -256,6 +257,10 @@ class ConverseKnowledgeController extends Controller
         $data = $request->validate([
             'message' => ['required', 'string', 'min:2', 'max:2000'],
             'collection' => ['nullable', 'integer', 'min:1'],
+            'history' => ['sometimes', 'array', 'list', 'max:10'],
+            'history.*' => ['required', 'array:direction,body'],
+            'history.*.direction' => ['required', Rule::in(['in', 'out'])],
+            'history.*.body' => ['required', 'string', 'max:2000'],
         ]);
 
         $scope = $this->collections($request)->where('enabled', true)->pluck('id')->all();
@@ -265,7 +270,9 @@ class ConverseKnowledgeController extends Controller
         }
         abort_if($scope === [], 422);
 
-        $turn = $compose(collect([(object) ['direction' => 'in', 'body' => $data['message']]]), [
+        $history = collect($data['history'] ?? [])->map(fn (array $row): object => (object) $row)
+            ->push((object) ['direction' => 'in', 'body' => $data['message']]);
+        $turn = $compose($history, [
             'collections' => $scope, 'agent' => 'sales', 'memory' => [], 'sandbox' => false,
         ]);
 
@@ -276,6 +283,8 @@ class ConverseKnowledgeController extends Controller
             'body' => $turn['body'], 'decision' => $turn['decision'], 'language' => $turn['language'],
             'intent' => $turn['intent'], 'provider' => $turn['provider'] ?? null, 'model' => $turn['model'] ?? null,
             'correction' => ($turn['correction'] ?? false) === true, 'sources' => $sources,
+            'messages' => $turn['messages'] ?? [$turn['body']], 'scope' => $turn['scope'],
+            'attachment' => $turn['asset_title'] ?? null,
         ]]);
     }
 
@@ -287,6 +296,8 @@ class ConverseKnowledgeController extends Controller
                     ->where('is_demo', (bool) $request->user()->is_demo)->where('enabled', true))],
             'question' => ['required', 'string', 'min:4', 'max:500'],
             'answer' => ['required', 'string', 'min:2', 'max:2000'],
+            'follow_up' => ['nullable', 'string', 'max:2000'],
+            'catalog_attachment_id' => ['nullable', 'integer', $this->correctionAttachment($request->integer('collection_id') ?: null)],
         ]);
 
         $id = DB::table('cv_knowledge_corrections')->insertGetId([
@@ -301,15 +312,17 @@ class ConverseKnowledgeController extends Controller
 
     public function updateCorrection(Request $request, RecordConverseAudit $audit, int $correction): RedirectResponse
     {
-        $data = $request->validate([
-            'question' => ['sometimes', 'string', 'min:4', 'max:500'],
-            'answer' => ['sometimes', 'string', 'min:2', 'max:2000'],
-            'enabled' => ['sometimes', 'boolean'],
-        ]);
         $scope = $this->correctionScope($request);
 
-        DB::transaction(function () use ($scope, $correction, $data, $audit, $request): void {
+        DB::transaction(function () use ($scope, $correction, $audit, $request): void {
             $current = (clone $scope)->where('id', $correction)->lockForUpdate()->firstOrFail();
+            $data = $request->validate([
+                'question' => ['sometimes', 'string', 'min:4', 'max:500'],
+                'answer' => ['sometimes', 'string', 'min:2', 'max:2000'],
+                'follow_up' => ['nullable', 'string', 'max:2000'],
+                'catalog_attachment_id' => ['nullable', 'integer', $this->correctionAttachment($current->collection_id)],
+                'enabled' => ['sometimes', 'boolean'],
+            ]);
             (clone $scope)->where('id', $correction)->update([...$data, 'updated_at' => now()]);
             $audit($request->user()->id, 'knowledge.correction_updated', 'knowledge_correction', $correction, $data);
         });
@@ -339,6 +352,13 @@ class ConverseKnowledgeController extends Controller
 
         return DB::table('cv_knowledge_corrections')
             ->where(fn (Builder $query) => $query->whereNull('collection_id')->orWhereIn('collection_id', $collectionIds));
+    }
+
+    private function correctionAttachment(?int $collection): Exists
+    {
+        return Rule::exists('cv_outbound_assets', 'id')->where(fn (Builder $query) => $query
+            ->whereNotNull('collection_id')->where('collection_id', $collection)
+            ->whereNull('conversation_id')->where('approved', true));
     }
 
     private function collections(Request $request): Builder

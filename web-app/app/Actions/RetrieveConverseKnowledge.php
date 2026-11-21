@@ -10,7 +10,7 @@ class RetrieveConverseKnowledge
 {
     public function __construct(private ConverseAiSettings $configuration, private EmbedConverseText $embed) {}
 
-    public function __invoke(array $collectionIds, string $search, bool $demo = false, int $limit = 10, ?string $semanticQuery = null, ?int $entryId = null): Collection
+    public function __invoke(array $collectionIds, string $search, bool $demo = false, int $limit = 10, ?string $semanticQuery = null, ?int $entryId = null, ?int $subjectId = null): Collection
     {
         $today = now('Asia/Dhaka')->toDateString();
         $term = trim(mb_substr($search, 0, 100));
@@ -26,6 +26,8 @@ class RetrieveConverseKnowledge
             ->where(fn (Builder $query) => $query->whereNull('entry.document_id')->orWhere(fn (Builder $document) => $this->published($document, 'document', $today)->where('document.status', 'indexed')
                 ->whereColumn('document.collection_id', 'entry.collection_id')))
             ->when($entryId !== null, fn (Builder $query) => $query->where('entry.id', $entryId))
+            ->when($subjectId !== null, fn (Builder $query) => $query->where(fn (Builder $query) => $query
+                ->where('entry.id', $subjectId)->orWhere('entry.subject_id', $subjectId)))
             ->whereIn('collection.id', $collectionIds)->where('collection.is_demo', $demo)
             ->where('collection.enabled', true)
             ->where(fn (Builder $query) => $this->published($query, 'entry', $today))

@@ -114,11 +114,7 @@ class ConverseInboxController extends Controller
         }
 
         return Inertia::render('Converse/Inbox', [
-            'aiTrace' => fn () => $thread && $canManage
-                ? DB::table('cv_ai_turns as turn')->join('cv_messages as inbound', 'inbound.id', '=', 'turn.inbound_message_id')
-                    ->where('inbound.conversation_id', $thread->id)->orderByDesc('turn.id')
-                    ->first(['turn.language', 'turn.intent', 'turn.decision', 'turn.provider', 'turn.model', 'turn.fallback', 'turn.source_ids'])
-                : null,
+            'aiTrace' => fn () => $thread && $canManage ? $this->latestAiTrace($thread->id) : null,
             'conversations' => $conversations,
             'thread' => $thread,
             'messages' => $messages,
@@ -166,6 +162,19 @@ class ConverseInboxController extends Controller
         unset($draft['asset_collections'], $draft['asset_agent']);
 
         return response()->json(['draft' => $draft]);
+    }
+
+    private function latestAiTrace(int $conversation): ?object
+    {
+        $trace = DB::table('cv_ai_turns as turn')->join('cv_messages as inbound', 'inbound.id', '=', 'turn.inbound_message_id')
+            ->where('inbound.conversation_id', $conversation)->orderByDesc('turn.id')
+            ->first(['turn.language', 'turn.intent', 'turn.decision', 'turn.provider', 'turn.model', 'turn.fallback',
+                'turn.source_ids', 'turn.knowledge_scope']);
+        if ($trace !== null) {
+            $trace->knowledge_scope = json_decode($trace->knowledge_scope ?? 'null', true, flags: JSON_THROW_ON_ERROR);
+        }
+
+        return $trace;
     }
 
     public function update(Request $request, int $conversation, RecordConverseAudit $audit, RecordConverseNotification $notifications): RedirectResponse

@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Inertia\Testing\AssertableInertia as Assert;
 
 uses(RefreshDatabase::class);
 
@@ -151,6 +152,65 @@ it('restricts the model to approved assets in its assigned collection and sends 
         ? ($r['image']['id'] ?? null) === '1001' && filled($r['image']['caption'])
         : ($r['message']['attachment']['type'] ?? null) === 'image'));
 })->with(['messenger', 'whatsapp']);
+
+it('sends an approved answer with a file and a follow-up once and adds tags alongside staff tags', function (bool $accepted) {
+    [$account, $thread, $message] = converseAttachmentThread('whatsapp', 'DT Restora price and demo');
+    $admin = User::factory()->create()->assignRole('administrator');
+    $collection = DB::table('cv_knowledge_collections')->insertGetId(['name' => 'Restaurant fixtures', 'enabled' => true]);
+    config(['converse.ai.channels' => [$account => ['enabled' => true, 'agent' => 'sales', 'collections' => [$collection]]]]);
+    DB::table('cv_knowledge_entries')->insert([
+        'collection_id' => $collection, 'kind' => 'product', 'title' => 'DT Restora', 'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    $tag = DB::table('cv_conversation_tags')->insertGetId(['name' => 'Existing staff tag', 'created_by' => $admin->id]);
+    DB::table('cv_conversation_tag')->insert(['conversation_id' => $thread, 'tag_id' => $tag]);
+
+    $this->actingAs($admin)->post(route('converse.knowledge.outbound-assets.store', $collection), [
+        'title' => 'Restora approved brochure', 'attachment' => converseAttachmentPdf(),
+    ])->assertRedirect();
+    $asset = DB::table('cv_outbound_assets')->soleValue('id');
+    $this->patch(route('converse.knowledge.outbound-assets.update', [$collection, $asset]), ['approved' => true])->assertRedirect();
+    $approval = [
+        'question' => 'price and demo', 'answer' => 'Monthly pricing is 1,000 BDT per branch.',
+        'follow_up' => 'Which day works for your free demo?', 'catalog_attachment_id' => $asset,
+    ];
+    $this->post('/converse/knowledge/corrections', [...$approval, 'collection_id' => null])
+        ->assertSessionHasErrors('catalog_attachment_id');
+    $this->post('/converse/knowledge/corrections', [...$approval, 'collection_id' => $collection])->assertRedirect();
+
+    $this->postJson('/converse/knowledge/chat', ['message' => 'DT Restora price and demo'])
+        ->assertOk()->assertJsonPath('reply.scope.type', 'product')->assertJsonPath('reply.scope.label', 'DT Restora')
+        ->assertJsonPath('reply.messages', [$approval['answer'], $approval['follow_up']])
+        ->assertJsonPath('reply.attachment', 'Restora approved brochure');
+
+    $messages = Http::sequence();
+    if ($accepted) {
+        $messages->push(['messages' => [['id' => 'wamid.fixture-file']]])
+            ->push(['messages' => [['id' => 'wamid.fixture-follow-up']]]);
+    } else {
+        $messages->pushStatus(400);
+    }
+    Http::fake([
+        'https://graph.facebook.com/*/101/media' => Http::response(['id' => '1001']),
+        'https://graph.facebook.com/*/101/messages' => $messages,
+    ]);
+
+    dispatch_sync(new ReplyToConverseTurn($message));
+    dispatch_sync(new ReplyToConverseTurn($message));
+
+    Http::assertSentCount($accepted ? 3 : 2);
+    Http::assertSent(fn (Request $request) => ($request['type'] ?? null) === 'document'
+        && $request['document']['caption'] === $approval['answer']);
+    $this->assertDatabaseHas('cv_messages', ['conversation_id' => $thread, 'outbound_asset_id' => $asset,
+        'attachment_status' => $accepted ? 'accepted' : 'failed']);
+    $this->assertDatabaseCount('cv_ai_turns', 1);
+    $this->assertDatabaseCount('cv_conversation_tag', 4);
+    expect(DB::table('cv_messages')->where('direction', 'out')->orderBy('id')->pluck('body')->all())
+        ->toBe($accepted ? [$approval['answer'], $approval['follow_up']] : [$approval['answer']]);
+    $this->get(route('converse.inbox', $thread))->assertInertia(fn (Assert $page) => $page
+        ->where('conversations.data.0.mode', $accepted ? 'ai' : 'human')
+        ->where('conversations.data.0.tags', ['DT Restora', 'Demo', 'Existing staff tag', 'Pricing'])
+        ->where('aiTrace.knowledge_scope.label', 'DT Restora'));
+})->with([true, false]);
 
 it('rejects arbitrary URLs, unsupported file bytes before provider calls', function () {
     [, $thread] = converseAttachmentThread('whatsapp');

@@ -106,7 +106,7 @@ class SendConverseReply
         });
     }
 
-    public function automatic(int $conversation, int $inboundId, string $operationId, string $body, bool $handoff, ?int $assetId = null, array $catalogScope = [], ?string $catalogAgent = null): void
+    public function automatic(int $conversation, int $inboundId, string $operationId, string $body, bool $handoff, ?int $assetId = null, array $catalogScope = [], ?string $catalogAgent = null): bool
     {
         $claim = DB::transaction(function () use ($conversation, $inboundId, $operationId, $body, $assetId): ?int {
             $thread = $this->thread(null, $conversation);
@@ -123,7 +123,7 @@ class SendConverseReply
             ]);
         });
 
-        DB::transaction(function () use ($claim, $conversation, $inboundId, $body, $handoff, $operationId, $assetId, $catalogScope, $catalogAgent): void {
+        return DB::transaction(function () use ($claim, $conversation, $inboundId, $body, $handoff, $operationId, $assetId, $catalogScope, $catalogAgent): bool {
             $thread = $this->thread(null, $conversation);
             $eligible = $this->canReplyAutomatically($thread, $conversation, $inboundId);
             $status = 'failed';
@@ -153,6 +153,7 @@ class SendConverseReply
             if ($claim !== null) {
                 DB::table('cv_messages')->where('id', $claim)->where('delivery_status', 'sending')->update([
                     'delivery_status' => $status, 'external_id' => $externalId,
+                    'attachment_status' => $attachmentStatus, 'attachment_external_id' => $attachmentId,
                 ]);
             }
 
@@ -175,6 +176,8 @@ class SendConverseReply
                 ]);
                 $this->notifications->humanHandoff($conversation);
             }
+
+            return $claim !== null && $status === 'accepted';
         });
     }
 

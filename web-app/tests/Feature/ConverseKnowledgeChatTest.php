@@ -214,6 +214,53 @@ it('keeps the product in scope for a follow-up and respects an explicit switch',
     Http::assertNothingSent();
 });
 
+it('keeps a named service in scope and answers two distinct questions from its published prices', function () {
+    $collection = knowledgeChatCollection('Software and services');
+    $product = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'product', 'title' => 'DT Widget',
+        'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    $service = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'service', 'title' => 'Managed Setup',
+        'language' => 'en', 'enabled' => true, 'public' => true,
+    ]);
+    foreach ([
+        [$product, 'Widget monthly plan', 'monthly', 100],
+        [$service, 'Managed Setup monthly plan', 'monthly', 1200],
+        [$service, 'Managed Setup one-time installation', 'one_time', 2500],
+    ] as [$subject, $title, $type, $amount]) {
+        $prices[$title] = DB::table('cv_knowledge_entries')->insertGetId([
+            'collection_id' => $collection, 'subject_id' => $subject, 'kind' => 'price', 'title' => $title,
+            'language' => 'en', 'amount_type' => $type, 'amount' => $amount, 'currency' => 'BDT', 'enabled' => true, 'public' => true,
+        ]);
+    }
+    $monthly = $prices['Managed Setup monthly plan'];
+    $setup = $prices['Managed Setup one-time installation'];
+    Http::fake(['http://127.0.0.1:11434/api/chat' => function (Request $request) use ($monthly, $setup) {
+        $input = json_decode($request['messages'][1]['content'], true);
+        expect(array_column($input['sources'], 'id'))->toEqualCanonicalizing([$monthly, $setup]);
+
+        return Http::response(['done' => true, 'done_reason' => 'stop', 'message' => [
+            'content' => json_encode(['source_ids' => [$monthly, $setup], 'confidence' => 0.99, 'ask_follow_up' => true]),
+        ]]);
+    }]);
+
+    $this->actingAs(User::factory()->create()->assignRole('administrator'))
+        ->postJson('/converse/knowledge/chat', [
+            'message' => 'What is the monthly price and installation fee?',
+            'history' => [
+                ['direction' => 'in', 'body' => 'Tell me about DT Widget'],
+                ['direction' => 'in', 'body' => 'I am asking about Managed Setup now'],
+            ],
+        ])->assertOk()
+        ->assertJsonPath('reply.scope.type', 'service')
+        ->assertJsonPath('reply.scope.subject_id', $service)
+        ->assertJsonPath('reply.messages', [
+            'Managed Setup price: 1200 BDT per month',
+            "Managed Setup price: 2500 BDT one time\n\nIs there anything else I can help with?",
+        ]);
+});
+
 it('manages corrections with validation, scoping and permissions', function () {
     $admin = User::factory()->create()->assignRole('administrator');
     $this->actingAs($admin);

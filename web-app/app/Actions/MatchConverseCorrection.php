@@ -20,7 +20,7 @@ class MatchConverseCorrection
         $message = ' '.$normalized.' ';
         $match = DB::table('cv_knowledge_corrections')->where('enabled', true)
             ->where(fn ($query) => $query->whereNull('collection_id')->orWhereIn('collection_id', $collectionIds))
-            ->get(['id', 'collection_id', 'question', 'answer'])
+            ->get(['id', 'collection_id', 'question', 'answer', 'follow_up', 'catalog_attachment_id'])
             ->map(fn (object $row): array => ['correction' => $row, 'length' => $this->matchingLength($message, $row->question)])
             ->filter(fn (array $match): bool => $match['length'] > 0)
             ->sortByDesc(fn (array $match): array => [

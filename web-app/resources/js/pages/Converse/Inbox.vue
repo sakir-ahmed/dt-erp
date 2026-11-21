@@ -105,7 +105,7 @@ async function draftReply() {
         draftUnavailable.value = props.thread?.id === threadId;
     }
 }
-const poll = usePoll(3000, { only: ['conversations', 'thread', 'messages', 'replyBlockedReason', 'aiTrace'] }, { autoStart: false });
+const poll = usePoll(3000, { only: ['conversations', 'thread', 'messages', 'replyBlockedReason', 'aiTrace', 'tags'] }, { autoStart: false });
 
 function syncPoll(busy = [searching.value, state.processing, reply.processing, retryForm.processing]) {
     if (busy.some(Boolean) || document.hidden) poll.stop();
@@ -381,8 +381,12 @@ function threadUrl(id) {
                                         <span class="sr-only">{{ page.props.labels[row.channel] ?? row.channel }}</span>
                                     </span>
                                 </span>
-                                <span v-if="row.tags?.length" class="mt-1 flex flex-wrap gap-1">
-                                    <span v-for="name in row.tags" :key="name" class="rounded-full bg-page px-1.5 text-[11px] leading-5 text-muted">{{ name }}</span>
+                                <span class="mt-1 flex flex-wrap items-center gap-1">
+                                    <span class="rounded-full px-2 text-[11px] leading-5 font-semibold"
+                                        :class="row.mode === 'ai' ? 'bg-brand/10 text-brand' : 'border border-line bg-surface text-muted'">
+                                        {{ page.props.labels['mode_' + row.mode] }}
+                                    </span>
+                                    <span v-for="name in row.tags" :key="name" class="max-w-full wrap-anywhere rounded-full bg-page px-1.5 text-[11px] leading-5 text-muted">{{ name }}</span>
                                 </span>
                                 <span class="mt-1 block text-xs text-muted">{{ row.account }} · {{ formatDhakaDateTime(row.last_message_at, page.props.locale) }}</span>
                             </span>
@@ -452,6 +456,7 @@ function threadUrl(id) {
                     </details>
                     <p v-if="aiTrace" class="mt-1 text-xs text-muted">
                         {{ page.props.labels.ai_trace }} · {{ aiTrace.language }} · {{ aiTrace.decision }}<template v-if="aiTrace.model"> · {{ aiTrace.provider }} / {{ aiTrace.model }}</template>
+                        <span v-if="aiTrace.knowledge_scope" class="ms-1 rounded-full bg-selected px-2 py-0.5">{{ aiTrace.knowledge_scope.label ?? page.props.labels.knowledge_chat_all_collections }}</span>
                     </p>
                 </header>
                 <form v-if="canManageInbox" class="flex flex-wrap items-end gap-2 border-b border-line p-3" @submit.prevent="saveState">
