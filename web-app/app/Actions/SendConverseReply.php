@@ -16,7 +16,7 @@ use Illuminate\Validation\ValidationException;
 
 class SendConverseReply
 {
-    public function __construct(private ConverseAiSettings $aiSettings, private RecordConverseNotification $notifications, private ConverseOutboundAssets $assets, private SendConverseMedia $media) {}
+    public function __construct(private ConverseAiSettings $aiSettings, private RecordConverseNotification $notifications, private ConverseOutboundAssets $assets, private SendConverseMedia $media, private WorkspaceSettings $workspaceSettings) {}
 
     public function __invoke(User $user, int $conversation, string $operationId, string $body, ?UploadedFile $file = null, ?int $catalogAsset = null): string
     {
@@ -233,8 +233,21 @@ class SendConverseReply
 
     private function autoReplyEnabled(int $accountId): bool
     {
-        return config('converse.ai.auto_reply') === true
-            && ($this->aiSettings->channel($accountId)['enabled'] ?? false) === true;
+        $settings = $this->workspaceSettings->converse();
+        if ($settings['auto_reply'] !== true) {
+            return false;
+        }
+
+        // A channel account configured in the AI playground overrides the
+        // per-type default from workspace settings.
+        $override = $this->aiSettings->channel($accountId)['enabled'] ?? null;
+        if ($override !== null) {
+            return $override === true;
+        }
+
+        $type = DB::table('cv_channel_accounts')->where('id', $accountId)->value('type');
+
+        return ($settings['channel_types'][$type] ?? false) === true;
     }
 
     public function unavailableReason(User $user, int $conversation): ?string

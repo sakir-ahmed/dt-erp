@@ -1,5 +1,5 @@
 <script setup>
-import { faBookOpen, faPlay, faPlug, faBell, faInbox, faChartLine, faPlugCircleXmark, faSun, faWifi, faChevronDown, faChevronLeft, faChevronRight, faEye, faEyeSlash, faCubes, faMoon, faTableColumns, faUsers, faTriangleExclamation, faBars, faPlus, faXmark, faMagnifyingGlass, faPen, faPaperclip, faFile, faFilePdf, faCopy, faPhone, faLink } from '@fortawesome/free-solid-svg-icons';
+import { faBookOpen, faPlay, faPlug, faBell, faInbox, faChartLine, faPlugCircleXmark, faSun, faWifi, faChevronDown, faChevronLeft, faChevronRight, faEye, faEyeSlash, faCubes, faMoon, faTableColumns, faUsers, faTriangleExclamation, faBars, faPlus, faXmark, faMagnifyingGlass, faPen, faPaperclip, faFile, faFilePdf, faCopy, faPhone, faLink, faGear } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/vue-fontawesome';
 
 defineProps({
@@ -37,6 +37,7 @@ const icons = {
     copy: faCopy,
     phone: faPhone,
     link: faLink,
+    settings: faGear,
 };
 </script>
 

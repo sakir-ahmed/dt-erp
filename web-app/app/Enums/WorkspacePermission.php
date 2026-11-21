@@ -10,4 +10,5 @@ enum WorkspacePermission: string
     case ViewConverseInbox = 'converse.inbox.view';
     case ViewUsers = 'users.view';
     case ManageUsers = 'users.manage';
+    case ManageSettings = 'settings.manage';
 }

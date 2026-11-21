@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 
 class RecordConverseInboundMessage
 {
-    public function __construct(private RememberConverseConversation $memory, private RecordConverseNotification $notifications) {}
+    public function __construct(private RememberConverseConversation $memory, private RecordConverseNotification $notifications, private WorkspaceSettings $settings) {}
 
     /**
      * Record a verified, normalized provider message within an existing channel account.
@@ -52,6 +52,8 @@ class RecordConverseInboundMessage
             $conversationId = DB::table('cv_conversations')->where('contact_identity_id', $identityId)->value('id')
                 ?? DB::table('cv_conversations')->insertGetId([
                     'contact_identity_id' => $identityId,
+                    // Workspace settings decide how new conversations start out.
+                    'mode' => in_array($mode = $this->settings->converse()['new_conversation_mode'] ?? 'ai', ['ai', 'human', 'paused'], true) ? $mode : 'ai',
                     'last_message_at' => $occurredAt,
                     'created_at' => $now,
                     'updated_at' => $now,

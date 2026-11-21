@@ -10,6 +10,7 @@ use App\Http\Controllers\ConversePlaygroundController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\LocalQuickSignInController;
 use App\Http\Controllers\SessionController;
+use App\Http\Controllers\SettingsController;
 use App\Http\Controllers\UserDirectoryController;
 use App\Http\Requests\UpdateLocaleRequest;
 use Illuminate\Support\Facades\Route;
@@ -102,6 +103,16 @@ Route::middleware('auth')->group(function () {
             ->whereNumber(['collection', 'document'])->name('converse.knowledge.documents.reindex');
         Route::patch('/collections/{collection}/entries/{entry}', [ConverseKnowledgeController::class, 'saveEntry'])->whereNumber(['collection', 'entry'])->name('converse.knowledge.entries.update');
     });
+
+    Route::get('/settings', [SettingsController::class, 'index'])
+        ->can(WorkspacePermission::ManageSettings->value)
+        ->name('settings.index');
+    Route::patch('/settings/application', [SettingsController::class, 'updateApplication'])
+        ->can(WorkspacePermission::ManageSettings->value)
+        ->name('settings.application.update');
+    Route::patch('/settings/converse', [SettingsController::class, 'updateConverse'])
+        ->can(WorkspacePermission::ManageSettings->value)
+        ->name('settings.converse.update');
 
     Route::post('/logout', [SessionController::class, 'destroy'])->name('logout');
 });

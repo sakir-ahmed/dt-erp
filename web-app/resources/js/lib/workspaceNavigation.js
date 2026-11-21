@@ -20,5 +20,8 @@ export function useWorkspaceNavigation() {
         ...(page.props.canViewUsers ? [
             { group: 'admin_group', label: 'users', href: '/users', icon: 'users', search: 'search_users', pages: ['Users/Index'] },
         ] : []),
+        ...(page.props.canManageSettings ? [
+            { group: 'admin_group', label: 'settings', href: '/settings', icon: 'settings', pages: ['Settings/Index'] },
+        ] : []),
     ]);
 }
