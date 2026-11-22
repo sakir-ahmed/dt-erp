@@ -147,6 +147,7 @@ class ConversePlaygroundController extends Controller
             'draft' => [
                 'text' => $turn['body'], 'messages' => $turn['messages'] ?? [$turn['body']],
                 'decision' => $turn['decision'], 'intent' => $turn['intent'], 'scope' => $turn['scope'],
+                'language' => $turn['language'],
                 'provider' => $turn['provider'] ?? null, 'model' => $turn['model'] ?? null,
                 'correction' => ($turn['correction'] ?? false) === true,
                 'fallback' => $turn['fallback'] ?? false, 'source_ids' => $turn['source_ids'],

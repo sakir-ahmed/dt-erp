@@ -6,13 +6,18 @@ use Illuminate\Support\Collection;
 
 class ComposeConverseReply
 {
-    public function __construct(private RetrieveConverseKnowledge $retrieve, private RouteConverseDraft $draft, private ConverseAiSettings $configuration, private DetectConverseLanguage $languages, private ConverseOutboundAssets $assets, private MatchConverseCorrection $corrections, private ResolveConverseKnowledgeScope $knowledgeScope) {}
+    public function __construct(private RetrieveConverseKnowledge $retrieve, private RouteConverseDraft $draft, private ConverseAiSettings $configuration, private DetectConverseLanguage $languages, private ConverseOutboundAssets $assets, private MatchConverseCorrection $corrections, private ResolveConverseKnowledgeScope $knowledgeScope, private WorkspaceSettings $workspace, private LocalizeConverseReply $localize) {}
 
     public function __invoke(Collection $history, array $settings): array
     {
         $latest = trim($history->last()->body);
         $configuration = $this->configuration->get();
-        $language = $settings['language_preference'] ?? $this->languages->message($latest);
+        $preference = $this->languages->requested($latest) ?? $settings['language_preference']
+            ?? $history->where('direction', 'in')->reverse()->map(fn (object $message): ?string => $this->languages->requested($message->body))->first(fn (?string $preference): bool => $preference !== null);
+        $customerLanguage = $preference ?? $this->languages->message($latest);
+        $mode = $this->workspace->converse()['reply_language'];
+        $forced = in_array($mode, ['bn', 'en', 'mixed'], true);
+        $language = $forced ? $mode : $customerLanguage;
         $intent = match (true) {
             (bool) preg_match('/\b((talk|speak|chat) (to|with) (a |an |your )?(human|agent|person|representative|team member)|human agent|human please|file a complaint|request a refund|refund my)\b|মানুষের সঙ্গে কথা|প্রতিনিধির (সঙ্গে|সাথে) কথা|অভিযোগ (করতে|জানাতে) চাই|টাকা ফেরত চাই/ui', $latest) => 'human_request',
             (bool) preg_match('/^(hi|hello|hey|salam|assalamu alaikum|হ্যালো|সালাম|আসসালামু আলাইকুম)[!.। ]*$/ui', $latest) => 'greeting',
@@ -40,10 +45,11 @@ class ComposeConverseReply
             return $turn;
         }
 
-        $language = $agent['language'] ?? $language;
+        $language = $forced ? $language : ($preference ?? $agent['language'] ?? $language);
         $turn['language'] = $language;
         $turn['body'] = $this->handoff($language, $intent);
-        $facts = ['agent' => $agentName, 'channel' => $settings['channel'] ?? null, 'language' => $language, 'intent' => $intent];
+        $facts = ['agent' => $agentName, 'channel' => $settings['channel'] ?? null,
+            'language' => $agent['language'] ?? $customerLanguage, 'intent' => $intent];
         $rule = collect($configuration['rules'])->first(fn (array $rule): bool => collect($rule['when'])->every(fn (string $value, string $key): bool => ($facts[$key] ?? null) === $value));
         if (! is_array($agent) || ($agent['enabled'] ?? true) !== true) {
             return $turn;
@@ -55,6 +61,7 @@ class ComposeConverseReply
                 'bn' => str_contains($latest, 'সালাম') ? 'ওয়ালাইকুম আসসালাম। বলুন, কীভাবে সাহায্য করতে পারি?'
                     : 'হ্যালো। কীভাবে আপনাকে সাহায্য করতে পারি?',
                 'banglish' => 'Shagotom! Ami Datatech BD-er AI assistant. Apnake kibhabe shahajjo korte pari?',
+                'mixed' => 'স্বাগতম। কোনো product বা service নিয়ে জানতে চাইলে বলুন।',
                 default => 'Hello! I’m Datatech BD’s AI assistant. How can I help?',
             }];
         }
@@ -62,6 +69,7 @@ class ComposeConverseReply
             return [...$turn, 'decision' => 'send', 'body' => match ($language) {
                 'bn' => 'স্বাগতম। আর কিছু জানতে চাইলে এখানেই লিখবেন।',
                 'banglish' => 'Shagotom. Ar kichu jante chaile ekhanei likhben.',
+                'mixed' => 'স্বাগতম। আরও কিছু জানতে চাইলে এখানেই message দিন।',
                 default => 'You’re welcome. If anything else comes up, just message us here.',
             }];
         }
@@ -69,6 +77,7 @@ class ComposeConverseReply
             return [...$turn, 'decision' => 'send', 'body' => match ($language) {
                 'bn' => 'ঠিক আছে। পরে কোনো প্রশ্ন থাকলে এখানেই লিখবেন।',
                 'banglish' => 'Thik ache. Pore kono proshno thakle ekhanei likhben.',
+                'mixed' => 'ঠিক আছে। আর কিছু জানতে চাইলে message দিন।',
                 default => 'Sounds good. Just message us here if another question comes up.',
             }];
         }
@@ -78,6 +87,13 @@ class ComposeConverseReply
             || preg_match('/\b(compare|difference|workflow|integrat\w*|connects?)\b|পার্থক্য|তুলনা|ইন্টিগ্রেশন|কাজ করে কীভাবে/ui', $latest) === 1;
         $workflowContext = $sandbox ? [] : [...$facts, 'collection_ids' => $collections];
         $callContext = array_intersect_key($settings, ['origin' => true, 'conversation_id' => true]);
+        $languageAttempts = [];
+        $recordLanguageAttempt = function (array $attempt) use (&$languageAttempts): void {
+            $languageAttempts[] = $attempt;
+        };
+        $localize = fn (array $messages): ?array => $forced
+            ? ($this->localize)($messages, $language, $cloudEnabled, $callContext, $recordLanguageAttempt)
+            : $messages;
         $wantsFile = ! $sandbox && preg_match('/\b(attach|brochure|catalog(?:ue)?|pdf|product book|download|send (?:me )?(?:a |the )?(?:file|photo|image))\b|ব্রোশিওর|ক্যাটালগ|পিডিএফ|বই পাঠা|ছবি পাঠা/ui', $latest);
         $assets = $wantsFile && count($collections) === 1
             ? $this->assets->catalog($collections)->orderBy('asset.id')->limit(30)->get(['asset.id', 'asset.title'])
@@ -91,6 +107,10 @@ class ComposeConverseReply
             if (filled($correction->follow_up)) {
                 $messages[] = $correction->follow_up;
             }
+            $messages = $localize($messages);
+            if ($messages === null) {
+                return [...$turn, 'attempts' => $languageAttempts];
+            }
             $asset = ! $sandbox && $correction->collection_id && $correction->catalog_attachment_id
                 ? $this->assets->catalog($collections)->where('asset.id', $correction->catalog_attachment_id)->first(['asset.id', 'asset.title'])
                 : null;
@@ -101,8 +121,9 @@ class ComposeConverseReply
                 ? array_intersect_key($this->chooseAsset($history, $assets, $collections, $agentName, $turn, $cloudEnabled, $workflowContext, $complex, $callContext), array_flip(['asset_id', 'asset_title', 'asset_collections', 'asset_agent', 'attempts']))
                 : $this->attachment($asset, $collections, $agentName);
 
-            return [...$turn, 'decision' => 'send', 'body' => $correction->answer, 'messages' => $messages,
+            return [...$turn, 'decision' => 'send', 'body' => $messages[0], 'messages' => $messages,
                 ...$attachment,
+                'attempts' => [...$languageAttempts, ...($attachment['attempts'] ?? [])],
                 'source_ids' => [], 'provider' => 'correction', 'correction' => true];
         }
 
@@ -111,6 +132,7 @@ class ComposeConverseReply
             $clarification = match ($language) {
                 'bn' => 'কোন সফটওয়্যার বা সেবা নিয়ে জানতে চাইছেন? নামটা বললে সে অনুযায়ী সাহায্য করতে পারব।',
                 'banglish' => 'Kon software ba service niye jante chachhen? Namta bolle shei onujayi help korte parbo.',
+                'mixed' => 'কোন software বা service নিয়ে জানতে চাইছেন? নামটা বললে সাহায্য করতে পারব।',
                 default => 'Which product or service are you asking about? I can help once I know which one you mean.',
             };
             if (! $history->where('direction', 'out')->contains('body', $clarification)) {
@@ -127,15 +149,16 @@ class ComposeConverseReply
             'monthly' => '/\b(monthly|subscription|per month)\b|মাসিক|প্রতি মাসে|মাসে/ui',
         ], fn (string $pattern): bool => preg_match($pattern, $latest) === 1));
         $topic = $settings['memory']['needs']['text'] ?? '';
+        $factLanguage = $forced ? null : $language;
         $entries = ($this->retrieve)($collections, '', demo: $sandbox, limit: 50, subjectId: $subjectId,
             semanticQuery: in_array($intent, ['price', 'offer'], true) ? null : trim($latest.' '.$topic))
             ->filter(fn (object $entry) => match ($intent) {
                 'price' => ($entry->kind === 'price' && $entry->subject_id !== null
                     && ($priceTypes === [] || in_array($entry->amount_type, $priceTypes, true)))
-                    || ($compound && $this->isPublicFact($entry, $language)),
+                    || ($compound && $this->isPublicFact($entry, $factLanguage)),
                 'offer' => ($entry->kind === 'offer' && $entry->subject_id !== null)
-                    || ($compound && $this->isPublicFact($entry, $language)),
-                default => $this->isPublicFact($entry, $language),
+                    || ($compound && $this->isPublicFact($entry, $factLanguage)),
+                default => $this->isPublicFact($entry, $factLanguage),
             })->values();
 
         if ($intent === 'price' && $priceTypes === []) {
@@ -194,7 +217,7 @@ class ComposeConverseReply
             accept: fn (string $text): bool => $select($text) !== null,
             localFallback: $rule['fallback_model'] ?? $agent['fallback_model'] ?? null,
             localModel: $rule['model'] ?? $agent['model'] ?? null,
-            localBudget: 42,
+            localBudget: $forced ? 30 : 42,
             cloudInput: $cloudInput,
             complex: $complex,
             workflowContext: $workflowContext,
@@ -202,6 +225,7 @@ class ComposeConverseReply
                 $attempts[] = $attempt;
             },
             callContext: $callContext,
+            cloudBudget: $forced ? 14 : 21,
         );
         $turn['attempts'] = $attempts;
         if ($draft === null) {
@@ -225,9 +249,15 @@ class ComposeConverseReply
             $messages[] = $body;
         }
         $messages = array_values(array_unique($messages));
+        $messages = $localize($messages);
+        $turn['attempts'] = [...$attempts, ...$languageAttempts];
+        if ($messages === null) {
+            return $turn;
+        }
         $followUp = match ($language) {
             'bn' => 'আর কিছু জানতে চাইলে বলবেন।',
             'banglish' => 'Ar kichu jante chaile bolben.',
+            'mixed' => 'আর কিছু জানতে চাইলে message দিন।',
             default => 'Is there anything else I can help with?',
         };
         if ($selection['ask_follow_up'] && $history->where('direction', 'out')
@@ -245,9 +275,9 @@ class ComposeConverseReply
             'source_ids' => array_column($selection['sources'], 'id')];
     }
 
-    private function isPublicFact(object $entry, string $language): bool
+    private function isPublicFact(object $entry, ?string $language): bool
     {
-        return ($entry->language === $language || ($entry->kind === 'document' && in_array($entry->language, ['mixed', 'unknown'], true)))
+        return ($language === null || $entry->language === $language || ($entry->kind === 'document' && in_array($entry->language, ['mixed', 'unknown'], true)))
             && in_array($entry->kind, ['faq', 'product', 'service', 'company', 'document'], true)
             && is_string($entry->body) && mb_strlen($entry->body) <= 1000
             && ! preg_match('/(?:https?:|www\.|[৳$€£]|\b(?:bdt|tk|discount|guarantee|password|secret|api key)\b|ছাড়|নিশ্চিত)/iu', $entry->body);
@@ -323,6 +353,7 @@ class ComposeConverseReply
             'body' => match ($turn['language']) {
                 'bn' => 'আপনার অনুরোধ করা ফাইলটি সংযুক্ত করা হলো।',
                 'banglish' => 'Apnar requested file-ta attach kore dilam.',
+                'mixed' => 'আপনার চাওয়া file-টি attach করে দিলাম।',
                 default => 'I’ve attached the file you requested.',
             }];
     }
@@ -347,16 +378,16 @@ class ComposeConverseReply
         }
         $period = match ($entry->amount_type) {
             'from' => match ($language) {
-                'bn' => ' থেকে শুরু', 'banglish' => ' theke shuru', default => ' starting price'
+                'bn', 'mixed' => ' থেকে শুরু', 'banglish' => ' theke shuru', default => ' starting price'
             },
             'monthly' => match ($language) {
-                'bn' => ' প্রতি মাসে', 'banglish' => ' proti mashe', default => ' per month'
+                'bn', 'mixed' => ' প্রতি মাসে', 'banglish' => ' proti mashe', default => ' per month'
             },
             'one_time' => match ($language) {
-                'bn' => ' এককালীন', 'banglish' => ' ekbar', default => ' one time'
+                'bn', 'mixed' => ' এককালীন', 'banglish' => ' ekbar', default => ' one time'
             },
             'yearly' => match ($language) {
-                'bn' => ' প্রতি বছর', 'banglish' => ' proti bochor', default => ' per year'
+                'bn', 'mixed' => ' প্রতি বছর', 'banglish' => ' proti bochor', default => ' per year'
             },
             default => '',
         };
@@ -376,6 +407,7 @@ class ComposeConverseReply
         if (in_array($intent, ['price', 'offer'], true)) {
             return match ($language) {
                 'bn' => 'আপনাকে সঠিক হিসাবটা জানাতে আমাদের টিমের একজন এখানেই কথা বলবেন।',
+                'mixed' => 'সঠিক pricing জানাতে আমাদের টিমের একজন এখানেই কথা বলবেন।',
                 'banglish' => 'Shothik hisabta janate amader team-er ekjon ekhanei kotha bolben.',
                 default => 'I’ll have someone from our team confirm the pricing for you here.',
             };
@@ -383,6 +415,7 @@ class ComposeConverseReply
         if ($intent === 'human_request') {
             return match ($language) {
                 'bn' => 'অবশ্যই। আমাদের টিমের একজন এই চ্যাটেই আপনার সঙ্গে কথা বলবেন।',
+                'mixed' => 'অবশ্যই। আমাদের team-এর একজন এই চ্যাটেই আপনার সঙ্গে কথা বলবেন।',
                 'banglish' => 'Obosshoi. Amader team-er ekjon ei chat-ei apnar shathe kotha bolben.',
                 default => 'Of course. Someone from our team will pick up right here.',
             };
@@ -390,6 +423,7 @@ class ComposeConverseReply
 
         return match ($language) {
             'bn' => 'এটা নিয়ে আমাদের একজন সহকর্মী এই চ্যাটেই আপনাকে সাহায্য করবেন। আর কোনো বিস্তারিত থাকলে এখানেই লিখতে পারেন।',
+            'mixed' => 'আমাদের support team-এর একজন এই চ্যাটেই আপনাকে সাহায্য করবেন। আর কোনো details থাকলে এখানেই লিখতে পারেন।',
             'banglish' => 'Eta niye amader ekjon shohokormi ei chat-ei apnake help korben. Aro kichu janate chaile ekhanei likhte paren.',
             default => 'I’ll ask a colleague to look into this and reply here. Feel free to share any extra details in this chat.',
         };

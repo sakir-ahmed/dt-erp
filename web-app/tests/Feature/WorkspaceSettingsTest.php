@@ -42,6 +42,8 @@ it('shows settings to administrators only', function () {
         ->component('Settings/Index')
         ->where('converse.auto_reply', true)
         ->where('converse.new_conversation_mode', 'ai')
+        ->where('converse.reply_language', 'auto')
+        ->where('replyLanguages', ['auto', 'bn', 'en', 'mixed'])
         ->where('converse.channel_types.messenger', true)
         ->where('converse.channel_types.whatsapp', true));
 });
@@ -104,17 +106,39 @@ it('persists settings through the admin form and audits the change', function ()
     $this->patch('/settings/converse', [
         'auto_reply' => true, 'new_conversation_mode' => 'human',
         'channel_types' => ['messenger' => true, 'whatsapp' => false],
+        'reply_language' => 'mixed',
     ])->assertRedirect();
 
     $stored = DB::table('settings')->where('section', 'converse')->pluck('value', 'key');
-    expect($stored)->toHaveCount(3)
-        ->and(json_decode($stored['channel_types'], true))->toBe(['messenger' => true, 'whatsapp' => false]);
+    expect($stored)->toHaveCount(4)
+        ->and(json_decode($stored['channel_types'], true))->toBe(['messenger' => true, 'whatsapp' => false])
+        ->and(json_decode($stored['reply_language'], true))->toBe('mixed');
     $this->assertDatabaseHas('cv_audit_events', ['user_id' => $admin->id, 'action' => 'settings.updated']);
 
     $this->patch('/settings/application', ['default_locale' => 'bn'])->assertRedirect();
     $this->get('/settings')->assertInertia(fn (AssertableInertia $page) => $page
-        ->where('application.default_locale', 'bn'));
+        ->where('application.default_locale', 'bn')->where('converse.reply_language', 'mixed'));
 });
+
+it('uses the saved language for automatic replies while customer mode detects the message language', function (string $mode, string $message, string $language, string $body) {
+    $account = settingsChannel('messenger');
+    config(['converse.ai.channels' => [$account => ['enabled' => true]]]);
+    app(WorkspaceSettings::class)->put('converse', ['reply_language' => $mode]);
+    $inbound = app(RecordConverseInboundMessage::class)($account, '8801000000302', 'in-language', $message, now()->subSecond());
+    Http::preventStrayRequests();
+    Http::fake(['https://graph.facebook.com/*' => Http::response(['message_id' => 'mid.language'])]);
+
+    app()->call([new ReplyToConverseTurn((int) $inbound), 'handle']);
+
+    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $inbound, 'language' => $language, 'decision' => 'send']);
+    $this->assertDatabaseHas('cv_messages', ['direction' => 'out', 'body' => $body]);
+    Http::assertSentCount(1);
+})->with([
+    ['bn', 'Hello', 'bn', 'হ্যালো। কীভাবে আপনাকে সাহায্য করতে পারি?'],
+    ['en', 'হ্যালো', 'en', 'Hello! I’m Datatech BD’s AI assistant. How can I help?'],
+    ['mixed', 'Hello', 'mixed', 'স্বাগতম। কোনো product বা service নিয়ে জানতে চাইলে বলুন।'],
+    ['auto', 'হ্যালো', 'bn', 'হ্যালো। কীভাবে আপনাকে সাহায্য করতে পারি?'],
+]);
 
 it('manages encrypted AI provider keys in common settings without exposing them', function () {
     $route = route('settings.ai-providers.update');
@@ -204,8 +228,9 @@ it('rejects invalid settings payloads', function () {
 
     $this->patch('/settings/converse', [
         'auto_reply' => 'yes', 'new_conversation_mode' => 'paused',
+        'reply_language' => 'fr',
         'channel_types' => ['messenger' => true, 'whatsapp' => true],
-    ])->assertSessionHasErrors(['auto_reply', 'new_conversation_mode']);
+    ])->assertSessionHasErrors(['auto_reply', 'new_conversation_mode', 'reply_language']);
     $this->patch('/settings/application', ['default_locale' => 'fr'])->assertSessionHasErrors(['default_locale']);
     Http::assertNothingSent();
 });

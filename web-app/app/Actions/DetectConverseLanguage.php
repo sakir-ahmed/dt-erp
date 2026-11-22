@@ -6,6 +6,16 @@ class DetectConverseLanguage
 {
     private const string BANGLISH = '/\b(koto+|ache|ase|lagbe|kemon|dam|daam|bhai|apni|ami|ki|kivabe|kibhabe|bolen|den|chai|er|ta|shathe|salam|kaj|kore|hoy|jonno|diye|korte|bujhte)\b/i';
 
+    public function requested(string $text): ?string
+    {
+        return match (true) {
+            (bool) preg_match('/\b(?:reply in |speak in |use )english\b|\benglish\s*(?:e|te)?\s*(?:bolen|bolun|please)\b|ইংরেজিতে বল/ui', $text) => 'en',
+            (bool) preg_match('/\b(?:reply in |speak in |use )banglish\b|\bbanglish\s*(?:e|te)?\s*(?:bolen|bolun|please)\b/ui', $text) => 'banglish',
+            (bool) preg_match('/\b(?:reply in |speak in |use )(?:bangla|bengali)\b|\b(?:bangla|bengali)\s*(?:e|te)?\s*(?:bolen|bolun|please)\b|বাংলায় বল/ui', $text) => 'bn',
+            default => null,
+        };
+    }
+
     public function message(string $text): string
     {
         if (preg_match('/\benglish\s*(?:e|te)?\s*(?:bolen|bolun|please)\b|ইংরেজিতে/ui', $text)) {

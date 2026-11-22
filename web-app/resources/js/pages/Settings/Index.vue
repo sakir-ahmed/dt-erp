@@ -13,6 +13,7 @@ const props = defineProps({
     locales: { type: Array, required: true },
     modes: { type: Array, required: true },
     channelTypes: { type: Array, required: true },
+    replyLanguages: { type: Array, required: true },
     aiProviders: { type: Array, required: true },
     converseAi: { type: Object, default: null },
 });
@@ -23,6 +24,7 @@ const application = useForm({ default_locale: props.application.default_locale }
 const converse = useForm({
     auto_reply: Boolean(props.converse.auto_reply),
     new_conversation_mode: props.converse.new_conversation_mode,
+    reply_language: props.converse.reply_language,
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(props.converse.channel_types?.[type])])),
 });
 const providerValues = () => Object.fromEntries(props.aiProviders.flatMap(({ id, enabled }) => [
@@ -59,6 +61,7 @@ watch(() => props.application.default_locale, (value) => application.defaults({ 
 watch(() => props.converse, (value) => converse.defaults({
     auto_reply: Boolean(value.auto_reply),
     new_conversation_mode: value.new_conversation_mode,
+    reply_language: value.reply_language,
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(value.channel_types?.[type])])),
 }), { deep: true });
 </script>
@@ -94,6 +97,15 @@ watch(() => props.converse, (value) => converse.defaults({
                     </select>
                 </FormField>
                 <p class="text-xs text-muted">{{ page.props.labels.settings_converse_new_mode_help }}</p>
+                <FormField v-slot="attrs" :label="page.props.labels.settings_converse_reply_language" :error="converse.errors.reply_language">
+                    <select v-model="converse.reply_language" v-bind="attrs" class="ui-input"
+                        :aria-describedby="[attrs['aria-describedby'], attrs.id + '-help'].filter(Boolean).join(' ')">
+                        <option v-for="value in replyLanguages" :key="value" :value="value">
+                            {{ page.props.labels[`settings_converse_reply_language_${value}`] }}
+                        </option>
+                    </select>
+                    <p :id="attrs.id + '-help'" class="mt-1 text-xs text-muted">{{ page.props.labels.settings_converse_reply_language_help }}</p>
+                </FormField>
                 <fieldset class="grid gap-2">
                     <legend class="text-sm font-medium">{{ page.props.labels.settings_converse_channel_types }}</legend>
                     <label v-for="type in channelTypes" :key="type" class="flex items-center gap-2 text-sm">

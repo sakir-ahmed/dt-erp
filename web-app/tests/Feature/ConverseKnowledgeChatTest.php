@@ -1,6 +1,7 @@
 <?php
 
 use App\Actions\ComposeConverseReply;
+use App\Actions\WorkspaceSettings;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -133,6 +134,75 @@ it('answers matching questions from trained corrections before the model runs', 
         ->assertJsonPath('reply.correction', true)
         ->assertJsonPath('reply.body', 'Yes, DT ERP answers in Bangla, English and Banglish.');
     Http::assertNothingSent();
+});
+
+it('adapts an approved reply to the workspace language and restores protected values', function (bool $valid) {
+    $admin = User::factory()->create()->assignRole('administrator');
+    $collection = knowledgeChatCollection('Products');
+    app(WorkspaceSettings::class)->put('converse', ['reply_language' => 'bn']);
+    DB::table('cv_knowledge_corrections')->insert([
+        'collection_id' => $collection, 'owner_id' => $admin->id,
+        'question' => 'installation booking', 'answer' => 'Email sales@example.invalid. The fee is 1,000 BDT.',
+        'follow_up' => 'আর কোনো প্রশ্ন থাকলে বলুন।', 'enabled' => true,
+    ]);
+    Http::fake(['http://127.0.0.1:11434/api/chat' => function (Request $request) use ($valid) {
+        $input = json_decode($request['messages'][1]['content'], true);
+        expect($input['messages'])->toEqual(['Email [[DT0]]. The fee is [[DT1]] [[DT2]].']);
+        expect($request['format']['properties'])->toHaveKey('messages');
+
+        return Http::response(['done' => true, 'done_reason' => 'stop', 'message' => [
+            'content' => json_encode(['messages' => [$valid
+                ? 'ইমেইল করুন [[DT0]] ঠিকানায়। ফি [[DT1]] [[DT2]]।'
+                : 'ইমেইল করুন [[DT0]] ঠিকানায়। ফি 900 [[DT2]]।']]),
+        ]]);
+    }]);
+
+    $response = $this->actingAs($admin)->postJson(route('converse.playground.run'), [
+        'mode' => 'knowledge', 'language' => 'en', 'collection' => $collection, 'message' => 'How do I request installation booking?',
+    ])->assertOk()->assertJsonPath('draft.language', 'bn')
+        ->assertJsonPath('draft.decision', $valid ? 'send' : 'handoff')
+        ->assertJsonPath('attempts.0.operation', 'translation');
+    if ($valid) {
+        $response->assertJsonPath('draft.messages', [
+            'ইমেইল করুন sales@example.invalid ঠিকানায়। ফি 1,000 BDT।',
+            'আর কোনো প্রশ্ন থাকলে বলুন।',
+        ]);
+    } else {
+        $response->assertDontSee('900');
+    }
+
+    $this->assertDatabaseHas('cv_ai_calls', ['operation' => 'translation', 'origin' => 'playground',
+        'status' => $valid ? 'accepted' : 'rejected']);
+})->with([true, false]);
+
+it('selects an approved source in another language before rendering an English-only reply', function () {
+    $collection = knowledgeChatCollection('Fixture products');
+    $source = DB::table('cv_knowledge_entries')->insertGetId([
+        'collection_id' => $collection, 'kind' => 'faq', 'language' => 'bn',
+        'title' => 'ক্যাশ মিলানো', 'body' => 'দোকান বন্ধের সময় ক্যাশ গুনে হিসাব মিলিয়ে নিন।',
+        'enabled' => true, 'public' => true,
+    ]);
+    app(WorkspaceSettings::class)->put('converse', ['reply_language' => 'en']);
+    Http::fake([
+        'http://127.0.0.1:11434/api/embed' => Http::response(['embeddings' => [[1, 0]]]),
+        'http://127.0.0.1:11434/api/chat' => Http::sequence()
+            ->push(['done' => true, 'done_reason' => 'stop', 'message' => [
+                'content' => json_encode(['source_ids' => [$source], 'confidence' => 0.99]),
+            ]])
+            ->push(['done' => true, 'done_reason' => 'stop', 'message' => [
+                'content' => '{"messages":["Count and reconcile the cash when the store closes."]}',
+            ]]),
+    ]);
+
+    $this->actingAs(User::factory()->create()->assignRole('administrator'))
+        ->postJson(route('converse.playground.run'), [
+            'mode' => 'knowledge', 'language' => 'bn', 'collection' => $collection,
+            'message' => 'দোকান বন্ধ হলে ক্যাশ কীভাবে মিলাব?',
+        ])->assertOk()
+        ->assertJsonPath('draft.language', 'en')
+        ->assertJsonPath('draft.sources.0.id', $source)
+        ->assertJsonPath('draft.text', 'Count and reconcile the cash when the store closes.');
+    Http::assertSentCount(3);
 });
 
 it('answers from the most specific approved question in the named collection', function (string $question, string $answer) {

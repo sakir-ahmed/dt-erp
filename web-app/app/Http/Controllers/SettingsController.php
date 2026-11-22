@@ -11,6 +11,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -40,6 +41,7 @@ class SettingsController extends Controller
             'locales' => self::LOCALES,
             'modes' => self::MODES,
             'channelTypes' => self::CHANNEL_TYPES,
+            'replyLanguages' => WorkspaceSettings::CONVERSE_REPLY_LANGUAGES,
             'aiProviders' => $aiProviders,
             'converseAi' => $canConfigure ? [
                 'providerSettings' => $configuration->public(),
@@ -119,6 +121,7 @@ class SettingsController extends Controller
         $validated = $request->validate([
             'auto_reply' => ['required', 'boolean'],
             'new_conversation_mode' => ['required', 'string', 'in:'.implode(',', self::MODES)],
+            'reply_language' => ['sometimes', 'required', 'string', Rule::in(WorkspaceSettings::CONVERSE_REPLY_LANGUAGES)],
             'channel_types' => ['required', 'array:'.implode(',', self::CHANNEL_TYPES)],
             'channel_types.*' => ['required', 'boolean'],
         ]);

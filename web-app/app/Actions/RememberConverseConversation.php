@@ -7,15 +7,12 @@ use Illuminate\Support\Facades\DB;
 
 class RememberConverseConversation
 {
+    public function __construct(private DetectConverseLanguage $languages) {}
+
     public function record(int $conversation, int $contact, string $body, CarbonInterface $occurredAt): void
     {
         $text = mb_substr(trim(preg_replace('/\s+/u', ' ', $body) ?? ''), 0, 320);
-        $preference = match (true) {
-            (bool) preg_match('/\b(?:reply in |speak in |use )english\b|\benglish\s*(?:e|te)?\s*(?:bolen|bolun|please)\b|ইংরেজিতে বল/ui', $text) => 'en',
-            (bool) preg_match('/\b(?:reply in |speak in |use )banglish\b|\bbanglish\s*(?:e|te)?\s*(?:bolen|bolun|please)\b/ui', $text) => 'banglish',
-            (bool) preg_match('/\b(?:reply in |speak in |use )(bangla|bengali)\b|\bbangla\s*(?:e|te)?\s*(?:bolen|bolun|please)\b|বাংলায় বল/ui', $text) => 'bn',
-            default => null,
-        };
+        $preference = $this->languages->requested($text);
         if ($preference !== null) {
             DB::table('cv_contacts')->where('id', $contact)
                 ->where(fn ($query) => $query->whereNull('language_preference_at')->orWhere('language_preference_at', '<=', $occurredAt))

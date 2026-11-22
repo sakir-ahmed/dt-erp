@@ -278,6 +278,10 @@ async function run() {
                                 <dt class="text-muted">{{ page.props.labels.knowledge_chat_scope }}</dt>
                                 <dd class="font-medium">{{ scope }}</dd>
                             </div>
+                            <div v-if="draft.language">
+                                <dt class="text-muted">{{ labels.settings_converse_reply_language }}</dt>
+                                <dd class="font-medium">{{ labels[`settings_converse_reply_language_${draft.language}`] ?? 'Banglish' }}</dd>
+                            </div>
                             <div>
                                 <dt class="text-muted">{{ page.props.labels.playground_duration }}</dt>
                                 <dd class="font-medium">{{ (outcome.duration_ms / 1000).toLocaleString(page.props.locale, { maximumFractionDigits: 2 }) }} {{ page.props.labels.playground_seconds }}</dd>
@@ -307,6 +311,7 @@ async function run() {
                             class="grid gap-1 rounded-md border border-line bg-page p-2 text-xs">
                             <span class="font-medium">{{ index + 1 }}. {{ cloudProviders[attempt.provider] || attempt.provider }} · {{ attempt.model }}</span>
                             <span class="text-muted">
+                                    <span v-if="attempt.operation === 'translation'">{{ labels.ai_calls.translation }} · </span>
                                 {{ page.props.labels[attempt.reason ? 'workflow_skip_' + attempt.reason : 'workflow_attempt_' + attempt.status] }}
                                 <span v-if="attempt.agent"> · {{ attempt.agent }}</span>
                                 <span v-if="attempt.duration_ms !== undefined"> · {{ (attempt.duration_ms / 1000).toLocaleString(page.props.locale, { maximumFractionDigits: 2 }) }} {{ page.props.labels.playground_seconds }}</span>

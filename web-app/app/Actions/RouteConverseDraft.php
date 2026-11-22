@@ -22,7 +22,7 @@ class RouteConverseDraft
     public function __construct(private ConverseAiSettings $configuration, private RecordConverseAiCall $recordCall) {}
 
     /** @return array{text: string, provider: string, model: string, fallback: bool, workflow?: string, workflow_agent?: string}|null */
-    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null, array $workflowContext = [], ?callable $recordAttempt = null, array $callContext = []): ?array
+    public function __invoke(string $instructions, string $input, bool $localOnly = true, ?string $preferred = null, ?callable $accept = null, ?string $localFallback = null, ?string $localModel = null, ?int $localBudget = null, ?string $cloudInput = null, bool $complex = false, bool $cloudOnly = false, ?string $cloudProvider = null, array $workflowContext = [], ?callable $recordAttempt = null, array $callContext = [], ?array $responseSchema = null, int $cloudBudget = 21): ?array
     {
         $settings = $this->configuration->get();
         $local = array_values(array_unique(array_filter([
@@ -46,7 +46,8 @@ class RouteConverseDraft
         $eligible = array_filter($candidates, fn (array $candidate): bool => ! isset($candidate[4]));
         $localCount = count(array_filter($eligible, fn (array $candidate): bool => $candidate[0] === 'ollama'));
         $remaining = ['local' => $localCount, 'cloud' => count($eligible) - $localCount];
-        $budget = ['local' => (float) ($localBudget ?? 36), 'cloud' => 21.0];
+        $budget = ['local' => (float) ($localBudget ?? 36), 'cloud' => (float) $cloudBudget];
+        $schema = $responseSchema ?? ($accept !== null ? self::REPLY_SELECTION_SCHEMA : null);
         $localConnectionFailed = false;
         foreach ($candidates as $index => $candidate) {
             [$provider, $model, $key] = $candidate;
@@ -89,7 +90,7 @@ class RouteConverseDraft
             $connectionFailed = false;
             try {
                 [$text, $response] = match ($provider) {
-                    'ollama' => $this->ollama($model, $prompt, $input, (int) $settings['ollama_port'], $accept !== null, $timeout),
+                    'ollama' => $this->ollama($model, $prompt, $input, (int) $settings['ollama_port'], $schema, $timeout),
                     'openai' => $this->openAi($model, $prompt, $externalInput, $key, $timeout),
                     'anthropic' => $this->anthropic($model, $prompt, $externalInput, $key, $timeout),
                     default => $this->chatCompletions($provider, $model, $prompt, $externalInput, $key, $accept !== null, $timeout),
@@ -104,8 +105,11 @@ class RouteConverseDraft
             $accepted = $text !== null && ($accept === null || $accept($text));
             $attempt += ['status' => $accepted ? 'accepted' : ($text === null ? 'unavailable' : 'rejected'),
                 'duration_ms' => (int) ($elapsed * 1000)];
+            if (isset($callContext['operation'])) {
+                $attempt['operation'] = $callContext['operation'];
+            }
             if ($response !== null || $connectionFailed) {
-                ($this->recordCall)([...$attempt, 'operation' => 'chat', 'origin' => $callContext['origin'] ?? 'reply',
+                ($this->recordCall)([...$attempt, 'operation' => $callContext['operation'] ?? 'chat', 'origin' => $callContext['origin'] ?? 'reply',
                     'conversation_id' => $callContext['conversation_id'] ?? null], $response,
                     ['instructions' => $prompt, 'input' => $externalInput, 'output' => $text], $settings['cloud_keys']);
             }
@@ -166,7 +170,7 @@ class RouteConverseDraft
         return $candidates;
     }
 
-    private function ollama(string $model, string $instructions, string $input, int $port, bool $structured, float $timeout): array
+    private function ollama(string $model, string $instructions, string $input, int $port, ?array $schema, float $timeout): array
     {
         // Accept only a bare, installed model name. Cloud-backed and registry references are excluded.
         if (! preg_match('/^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$/iD', $model) || str_contains(strtolower($model), 'cloud')) {
@@ -184,8 +188,16 @@ class RouteConverseDraft
                 'model' => $model,
                 'stream' => false,
                 'keep_alive' => '20m',
-                ...($structured ? ['format' => self::REPLY_SELECTION_SCHEMA] : []),
-                'options' => ['num_ctx' => 4096, 'num_predict' => $structured ? 72 : 128, ...($structured ? ['temperature' => 0] : [])],
+                ...($schema !== null ? ['format' => $schema] : []),
+                'options' => [
+                    'num_ctx' => 4096,
+                    'num_predict' => match ($schema) {
+                        self::REPLY_SELECTION_SCHEMA => 72,
+                        null => 128,
+                        default => 400,
+                    },
+                    ...($schema !== null ? ['temperature' => 0] : []),
+                ],
                 'messages' => [
                     ['role' => 'system', 'content' => $instructions],
                     ['role' => 'user', 'content' => $input],

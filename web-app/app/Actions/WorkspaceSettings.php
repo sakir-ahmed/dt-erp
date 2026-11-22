@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\DB;
 
 class WorkspaceSettings
 {
+    public const array CONVERSE_REPLY_LANGUAGES = ['auto', 'bn', 'en', 'mixed'];
+
     /**
      * Module and application settings stored per section. Stored values are
      * JSON and override the code defaults below; nothing is cached, so a save
@@ -20,6 +22,7 @@ class WorkspaceSettings
             'auto_reply' => null,
             // Handling mode assigned to conversations when they are created.
             'new_conversation_mode' => 'ai',
+            'reply_language' => 'auto',
             // Channel types eligible for automatic replies unless a channel
             // account overrides this in the AI playground.
             'channel_types' => ['messenger' => true, 'whatsapp' => true],
