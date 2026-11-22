@@ -16,16 +16,17 @@ class RecordConverseNotification
         $this->record($conversation, 'ai_reply');
     }
 
-    public function humanHandoff(int $conversation, bool $manual = false): void
+    public function humanHandoff(int $conversation, bool $manual = false): int
     {
-        $this->record($conversation, $manual ? 'manual_handoff' : 'human_handoff');
+        return $this->record($conversation, $manual ? 'manual_handoff' : 'human_handoff');
     }
 
-    private function record(int $conversation, string $type): void
+    private function record(int $conversation, string $type): int
     {
         // Serialize inserts until the enclosing transaction commits so the poll cursor cannot skip a late commit.
         DB::table('cv_notification_stream')->where('id', 1)->lockForUpdate()->first();
-        DB::table('cv_notification_events')->insert([
+
+        return (int) DB::table('cv_notification_events')->insertGetId([
             'conversation_id' => $conversation, 'type' => $type, 'created_at' => now(),
         ]);
     }

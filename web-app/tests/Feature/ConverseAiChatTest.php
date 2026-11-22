@@ -4,12 +4,14 @@ use App\Actions\AiProviderCredentials;
 use App\Actions\RecordConverseInboundMessage;
 use App\Jobs\ReplyToConverseTurn;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Database\Seeders\DatabaseSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 uses(RefreshDatabase::class);
 
@@ -105,7 +107,7 @@ it('combines recent inbound context and sends one verified structured price in t
     ['১ মাসের দাম কত?', 'bn', '১২০০ BDT প্রতি মাসে', 'whatsapp'],
 ]);
 
-it('hands off when the model is unavailable or chooses an unapproved source and keeps live history local', function (bool $unavailable) {
+it('queues the question without notifying the customer when the model cannot ground an answer', function (bool $unavailable) {
     [$account, $collection] = aiChatFixture();
     DB::table('cv_knowledge_entries')->insert([
         'collection_id' => $collection, 'kind' => 'faq', 'title' => 'ERP', 'body' => 'ERP tracks business workflows.',
@@ -120,8 +122,10 @@ it('hands off when the model is unavailable or chooses an unapproved source and 
 
     dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'm1', 'Do you make ERP?')));
 
-    $this->assertDatabaseHas('cv_conversations', ['mode' => 'human', 'status' => 'pending']);
-    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'handoff']);
+    $this->assertDatabaseHas('cv_conversations', ['mode' => 'ai', 'status' => 'open']);
+    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'queued']);
+    $this->assertDatabaseHas('cv_ai_review_tasks', ['reason' => 'unanswered', 'notification_id' => null]);
+    Http::assertNotSent(fn (Request $request) => str_contains($request->url(), 'graph.facebook.com'));
     Http::assertNotSent(fn (Request $request) => str_contains($request->url(), 'api.openai.com'));
 })->with([true, false]);
 
@@ -140,6 +144,105 @@ it('blocks automatic sends for takeover, opt-out and the kill switch', function 
     $this->assertDatabaseCount('cv_ai_turns', 0);
     Http::assertNothingSent();
 })->with(['takeover', 'opt-out', 'kill switch']);
+
+it('escalates only once at the daily unanswered limit and keeps answering later inbound messages', function () {
+    [$account] = aiChatFixture();
+    $this->travelTo(CarbonImmutable::parse('2026-11-22 23:50', 'Asia/Dhaka'));
+    Http::fake(['https://graph.facebook.com/*' => Http::sequence()
+        ->push(['message_id' => 'notice-at-five'])->push(['message_id' => 'next-ai-reply'])]);
+
+    for ($number = 1; $number <= 6; $number++) {
+        $message = aiChatInbound($account, "failed-{$number}", "What warranty applies to the unlisted item {$number}?");
+        $job = new ReplyToConverseTurn($message);
+        app()->call([$job, 'handle']);
+        app()->call([$job, 'handle']);
+        $this->assertDatabaseCount('cv_ai_review_tasks', $number);
+        expect(DB::table('cv_notification_events')->where('type', 'human_handoff')->count())->toBe($number < 5 ? 0 : 1);
+        Http::assertSentCount($number < 5 ? 0 : 1);
+    }
+    $this->assertDatabaseHas('cv_ai_review_tasks', ['reason' => 'unanswered', 'failure_date' => '2026-11-22']);
+    expect(DB::table('cv_ai_turns')->where('decision', 'handoff')->count())->toBe(1);
+
+    $next = aiChatInbound($account, 'next', 'Hello');
+    app()->call([new ReplyToConverseTurn($next), 'handle']);
+    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $next, 'decision' => 'send']);
+    $this->assertDatabaseHas('cv_messages', ['external_id' => 'next-ai-reply']);
+    $this->assertDatabaseHas('cv_conversations', ['mode' => 'ai']);
+
+    $this->travelTo(CarbonImmutable::parse('2026-11-23 00:05', 'Asia/Dhaka'));
+    $newDay = aiChatInbound($account, 'new-day', 'What are the terms for another unlisted product?');
+    app()->call([new ReplyToConverseTurn($newDay), 'handle']);
+    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $newDay, 'decision' => 'queued']);
+    $this->assertDatabaseHas('cv_ai_review_tasks', ['inbound_message_id' => $newDay, 'failure_date' => '2026-11-23']);
+    Http::assertSentCount(2);
+});
+
+it('answers a review task from the queue without taking over the chat and rejects duplicate sends', function () {
+    $this->withoutVite()->seed(DatabaseSeeder::class);
+    [$account] = aiChatFixture();
+    $inbound = aiChatInbound($account, 'queued', 'What warranty applies to this unlisted item?');
+    app()->call([new ReplyToConverseTurn($inbound), 'handle']);
+    $task = DB::table('cv_ai_review_tasks')->sole();
+    $url = route('converse.review.index', ['task' => $task->id]);
+    $reply = route('converse.review.reply', $task->id);
+    $payload = ['body' => 'Our team can verify your warranty from the order details.', 'operation_id' => (string) Str::uuid()];
+    $this->actingAs(User::factory()->create())->get($url)->assertForbidden();
+    $this->actingAs(User::factory()->create(['is_demo' => true])->assignRole('staff'))->get($url)->assertNotFound();
+    $this->post($reply, $payload)->assertNotFound();
+
+    $this->actingAs(User::factory()->create()->assignRole('staff'))->get($url)
+        ->assertOk()->assertInertia(fn ($page) => $page->component('Converse/ReviewQueue')->where('tasks.total', 1)
+        ->where('selected.question', 'What warranty applies to this unlisted item?')->where('selected.blocked_reason', null));
+    Http::fake(['https://graph.facebook.com/*' => Http::sequence()->pushStatus(403)->push(['message_id' => 'staff-reply'])]);
+    $this->from($url)->post($reply, $payload)->assertRedirect($url)->assertSessionHasErrors('body');
+    $this->get($url)->assertInertia(fn ($page) => $page->where('selected.state', 'pending')->where('selected.delivery_status', 'failed'));
+    $retry = [...$payload, 'operation_id' => (string) Str::uuid()];
+    $this->post($reply, $retry)->assertRedirect(route('converse.review.index'));
+    $this->post($reply, $retry)->assertRedirect(route('converse.review.index'));
+    $this->post($reply, [...$payload, 'operation_id' => (string) Str::uuid()])->assertSessionHasErrors('body');
+    Http::assertSentCount(2);
+    $this->assertDatabaseHas('cv_messages', [
+        'direction' => 'out', 'sender_type' => 'human', 'external_id' => 'staff-reply', 'body' => $payload['body'],
+    ]);
+    $this->assertDatabaseHas('cv_conversations', ['id' => $task->conversation_id, 'mode' => 'ai']);
+    $this->get(route('converse.review.index'))->assertInertia(fn ($page) => $page->where('tasks.total', 0));
+    $this->get(route('converse.review.index', ['status' => 'closed', 'task' => $task->id]))
+        ->assertInertia(fn ($page) => $page->where('selected.state', 'answered')->where('tasks.total', 1));
+});
+
+it('resumes a legacy automatic handoff on a new message and respects deliberate human takeover', function () {
+    $this->seed(DatabaseSeeder::class);
+    [$account] = aiChatFixture();
+    $record = app(RecordConverseInboundMessage::class);
+    $legacy = $record($account, '8801000000211', 'legacy', 'Earlier question', now()->subMinutes(2));
+    $manual = $record($account, '8801000000212', 'manual', 'Earlier question', now()->subMinutes(2));
+    $legacyThread = DB::table('cv_messages')->where('id', $legacy)->soleValue('conversation_id');
+    $manualThread = DB::table('cv_messages')->where('id', $manual)->soleValue('conversation_id');
+    DB::table('cv_conversations')->update(['mode' => 'human', 'status' => 'pending']);
+    foreach ([$legacyThread, $manualThread] as $thread) {
+        DB::table('cv_notification_events')->insert([
+            'conversation_id' => $thread, 'type' => 'human_handoff', 'created_at' => now()->subMinute(),
+        ]);
+    }
+    DB::table('cv_notification_events')->insert([
+        'conversation_id' => $manualThread, 'type' => 'manual_handoff', 'created_at' => now()->subSeconds(30),
+    ]);
+    $migration = require database_path('migrations/2026_11_22_013507_create_converse_ai_review_tasks_table.php');
+    $migration->down();
+    $migration->up();
+    $this->assertDatabaseHas('cv_conversations', ['id' => $legacyThread, 'resume_ai_on_inbound' => true]);
+    $this->assertDatabaseHas('cv_conversations', ['id' => $manualThread, 'resume_ai_on_inbound' => false]);
+    Http::fake(['https://graph.facebook.com/*' => Http::response(['message_id' => 'legacy-resumed'])]);
+    $next = $record($account, '8801000000211', 'follow-up-legacy', 'Hello', now());
+    $nextManual = $record($account, '8801000000212', 'follow-up-manual', 'Hello', now());
+    app()->call([new ReplyToConverseTurn($next), 'handle']);
+    app()->call([new ReplyToConverseTurn($nextManual), 'handle']);
+
+    Http::assertSentCount(1);
+    $this->assertDatabaseHas('cv_conversations', ['id' => $legacyThread, 'mode' => 'ai', 'resume_ai_on_inbound' => false]);
+    $this->assertDatabaseHas('cv_conversations', ['id' => $manualThread, 'mode' => 'human']);
+    $this->assertDatabaseMissing('cv_ai_turns', ['inbound_message_id' => $nextManual]);
+});
 
 it('uses a configured local fallback model without cloud disclosure', function () {
     [$account, $collection] = aiChatFixture();
@@ -203,10 +306,10 @@ it('tries both local models before cloud and promotes only complex questions to 
 
     expect($requestOrder)->toBe([
         'fixture', 'fixture-strong', 'fixture/model:free', 'fixture-economy',
-        ...($complex ? ['fixture-advanced'] : []), 'graph.facebook.com',
+        ...($complex ? ['fixture-advanced', 'graph.facebook.com'] : []),
     ]);
     $this->assertDatabaseHas('cv_ai_turns', [
-        'provider' => $complex ? 'anthropic' : null, 'decision' => $complex ? 'send' : 'handoff',
+        'provider' => $complex ? 'anthropic' : null, 'decision' => $complex ? 'send' : 'queued',
     ]);
     Http::assertSent(fn (Request $request) => str_contains($request->url(), 'openrouter.ai')
         && $request['provider']['zdr'] === true
@@ -229,8 +332,8 @@ it('keeps credential-related questions on Ollama even with live cloud enabled', 
 
     dispatch_sync(new ReplyToConverseTurn(aiChatInbound($account, 'm1', 'Why do I get an error with my POS PIN?')));
 
-    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'handoff']);
-    Http::assertSentCount(2);
+    $this->assertDatabaseHas('cv_ai_turns', ['decision' => 'queued']);
+    Http::assertSentCount(1);
 });
 
 it('honors an explicit live provider and model while retaining cloud redaction', function () {
@@ -284,7 +387,7 @@ it('checks human takeover again after model generation', function () {
     $this->assertDatabaseHas('cv_conversations', ['mode' => 'human', 'status' => 'open']);
 });
 
-it('hands off an uncertain delivery without attempting a second provider send', function () {
+it('queues an uncertain delivery separately from unanswered questions without sending it twice', function () {
     [$account] = aiChatFixture();
     Http::fake(['https://graph.facebook.com/*' => Http::failedConnection()]);
 
@@ -294,7 +397,11 @@ it('hands off an uncertain delivery without attempting a second provider send', 
 
     $this->assertDatabaseCount('cv_ai_turns', 1);
     $this->assertDatabaseHas('cv_messages', ['direction' => 'out', 'delivery_status' => 'unknown']);
-    $this->assertDatabaseHas('cv_conversations', ['mode' => 'human', 'status' => 'pending']);
+    $this->assertDatabaseHas('cv_conversations', ['mode' => 'ai', 'status' => 'open']);
+    $this->assertDatabaseHas('cv_ai_review_tasks', [
+        'inbound_message_id' => $message, 'reason' => 'delivery', 'notification_id' => null,
+        'ai_message_id' => DB::table('cv_messages')->where('direction', 'out')->soleValue('id'),
+    ]);
 });
 
 it('creates an editable Inbox draft without sending a message or claiming a turn', function () {
@@ -369,6 +476,6 @@ it('remembers several automatically linked collections while answering the curre
     $third = aiChatInbound($account, 'third-scope', 'DT Medix sales email please');
     dispatch_sync(new ReplyToConverseTurn($third));
     $this->assertDatabaseHas('cv_conversations', ['id' => $thread, 'knowledge_scope_mode' => 'manual',
-        'knowledge_collection_ids' => json_encode([$restora]), 'mode' => 'human']);
-    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $third, 'decision' => 'handoff']);
+        'knowledge_collection_ids' => json_encode([$restora]), 'mode' => 'ai']);
+    $this->assertDatabaseHas('cv_ai_turns', ['inbound_message_id' => $third, 'decision' => 'queued']);
 });

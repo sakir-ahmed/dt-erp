@@ -28,6 +28,12 @@ function openConversation(id) {
     if (workspaceNotifications.converseAlert?.id === id) workspaceNotifications.converseAlert = null;
 }
 
+function notificationLink(event) {
+    return event.task_id && page.props.canReviewConverseAi
+        ? '/converse/review-queue?task=' + event.task_id
+        : '/converse/inbox/' + event.conversation_id;
+}
+
 function markRead(event) {
     if (event.newState === 'open') {
         workspaceNotifications.unread = 0;
@@ -55,7 +61,7 @@ function markRead(event) {
                 <li v-for="event in workspaceNotifications.converseHandoffs" :key="event.id" class="grid gap-2 border-b border-line p-3">
                     <p class="text-sm font-semibold">{{ page.props.labels[event.type === 'human_handoff' ? 'converse_auto_handoff' : 'converse_manual_handoff'] }}</p>
                     <div class="flex flex-wrap gap-2">
-                        <Link class="ui-button" :href="`/converse/inbox/${event.conversation_id}`" @click="openConversation(event.id)">{{ page.props.labels.converse_open_conversation }}</Link>
+                        <Link class="ui-button" :href="notificationLink(event)" @click="openConversation(event.id)">{{ page.props.labels.converse_open_conversation }}</Link>
                         <button type="button" class="ui-button" :disabled="acknowledgement.processing" @click="acknowledge(event.id)">{{ page.props.labels.converse_acknowledge }}</button>
                     </div>
                 </li>
@@ -73,7 +79,7 @@ function markRead(event) {
                 {{ page.props.labels.converse_auto_handoff }}
             </p>
             <div class="mt-2 flex flex-wrap gap-2">
-                <Link class="ui-button ui-button-primary" :href="`/converse/inbox/${workspaceNotifications.converseAlert.conversation_id}`"
+                <Link class="ui-button ui-button-primary" :href="notificationLink(workspaceNotifications.converseAlert)"
                     @click="openConversation(workspaceNotifications.converseAlert.id)">{{ page.props.labels.converse_open_conversation }}</Link>
                 <button type="button" class="ui-button" :disabled="acknowledgement.processing"
                     @click="acknowledge(workspaceNotifications.converseAlert.id)">{{ page.props.labels.converse_acknowledge }}</button>

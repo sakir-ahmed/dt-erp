@@ -359,7 +359,13 @@ function threadUrl(id) {
 <template>
     <Head :title="page.props.labels.inbox" />
     <AdminLayout>
-        <PageHeader :title="page.props.labels.inbox" />
+        <PageHeader :title="page.props.labels.inbox">
+            <template #actions>
+                <Link v-if="page.props.canReviewConverseAi" href="/converse/review-queue" class="ui-button">
+                    <AppIcon name="bell" />{{ page.props.labels.ai_review_title }}
+                </Link>
+            </template>
+        </PageHeader>
         <div class="grid items-start gap-3 lg:grid-cols-[minmax(17rem,1fr)_minmax(0,2fr)]">
             <section class="min-w-0 overflow-hidden rounded-lg border border-line bg-surface" :aria-label="page.props.labels.inbox">
                 <SearchBar v-model="search" :label="page.props.labels.search_conversations" :clear-label="page.props.labels.clear" :has-filter="Boolean(filters.search)" :busy="searching" @search="filter" />
@@ -473,7 +479,7 @@ function threadUrl(id) {
                         </dl>
                     </details>
                     <p v-if="aiTrace" class="mt-1 text-xs text-muted">
-                        {{ page.props.labels.ai_trace }} · {{ aiTrace.language }} · {{ aiTrace.decision }}<template v-if="aiTrace.model"> · {{ aiTrace.provider }} / {{ aiTrace.model }}</template>
+                        {{ page.props.labels.ai_trace }} · {{ aiTrace.language }} · {{ page.props.labels.ai_review[aiTrace.decision + '_turn'] ?? aiTrace.decision }}<template v-if="aiTrace.model"> · {{ aiTrace.provider }} / {{ aiTrace.model }}</template>
                         <span v-if="aiTrace.knowledge_scope" class="ms-1 rounded-full bg-selected px-2 py-0.5">{{ aiTrace.knowledge_scope.label ?? page.props.labels[aiTrace.knowledge_scope.type === 'none' ? 'inbox_knowledge_scope_none' : 'knowledge_chat_all_collections'] }}</span>
                     </p>
                     <div v-if="thread.knowledge_scope" class="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-2 text-xs">

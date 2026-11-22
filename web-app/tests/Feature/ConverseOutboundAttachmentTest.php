@@ -203,11 +203,12 @@ it('sends an approved answer with a file and a follow-up once and adds tags alon
     $this->assertDatabaseHas('cv_messages', ['conversation_id' => $thread, 'outbound_asset_id' => $asset,
         'attachment_status' => $accepted ? 'accepted' : 'failed']);
     $this->assertDatabaseCount('cv_ai_turns', 1);
+    $this->assertDatabaseCount('cv_ai_review_tasks', $accepted ? 0 : 1);
     $this->assertDatabaseCount('cv_conversation_tag', 4);
     expect(DB::table('cv_messages')->where('direction', 'out')->orderBy('id')->pluck('body')->all())
         ->toBe($accepted ? [$approval['answer'], $approval['follow_up']] : [$approval['answer']]);
     $this->get(route('converse.inbox', $thread))->assertInertia(fn (Assert $page) => $page
-        ->where('conversations.data.0.mode', $accepted ? 'ai' : 'human')
+        ->where('conversations.data.0.mode', 'ai')
         ->where('conversations.data.0.tags', ['DT Restora', 'Demo', 'Existing staff tag', 'Pricing'])
         ->where('aiTrace.knowledge_scope.label', 'DT Restora'));
 })->with([true, false]);

@@ -7,6 +7,7 @@ use App\Actions\RecordWhatsAppDeliveryStatus;
 use App\Actions\SaveConverseInboundAttachment;
 use App\Actions\WhatsAppContactNames;
 use App\Actions\WhatsAppRecipient;
+use App\Actions\WorkspaceSettings;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Carbon;
@@ -168,7 +169,7 @@ class ProcessConverseWebhook implements ShouldQueue
             $conversation = (int) DB::table('cv_messages')->where('id', $id)->value('conversation_id');
             RefreshConverseMessengerProfile::dispatch($conversation)->onQueue('converse-inbound');
         }
-        if ($hasBody && config('converse.ai.auto_reply') === true) {
+        if ($hasBody && app(WorkspaceSettings::class)->converse()['auto_reply']) {
             ReplyToConverseTurn::dispatch($id)->onQueue('converse-ai')->delay(now()->addSeconds(3));
         }
     }

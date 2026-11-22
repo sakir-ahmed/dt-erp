@@ -18,6 +18,9 @@ export function useWorkspaceNavigation() {
         ...(page.props.canViewConverseAiCalls ? [
             { group: 'converse', label: 'ai_call_history', href: '/converse/ai-calls', icon: 'chart-line', pages: ['Converse/AiCalls'] },
         ] : []),
+        ...(page.props.canReviewConverseAi ? [
+            { group: 'converse', label: 'ai_review_title', href: '/converse/review-queue', icon: 'bell', pages: ['Converse/ReviewQueue'] },
+        ] : []),
         ...(page.props.canManageConverseChannels ? [
             { group: 'admin_group', label: 'channels', href: '/converse/channels', icon: 'plug', pages: ['Converse/Channels'] },
         ] : []),

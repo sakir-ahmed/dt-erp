@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Actions\ComposeConverseReply;
 use App\Actions\ConverseAiSettings;
+use App\Actions\ConverseReviewQueue;
 use App\Actions\RecordWhatsAppDeliveryStatus;
 use App\Actions\RetrieveConverseKnowledge;
 use App\Actions\SendConverseReply;
@@ -30,12 +31,8 @@ class ReplyToConverseTurn implements ShouldQueue
         return [(new WithoutOverlapping((string) $this->inboundMessageId))->releaseAfter(5)->expireAfter(90)];
     }
 
-    public function handle(ComposeConverseReply $compose, SendConverseReply $send, RetrieveConverseKnowledge $knowledge, ConverseAiSettings $configuration, TagConverseAiConversation $tag): void
+    public function handle(ComposeConverseReply $compose, SendConverseReply $send, RetrieveConverseKnowledge $knowledge, ConverseAiSettings $configuration, TagConverseAiConversation $tag, ConverseReviewQueue $review): void
     {
-        if (config('converse.ai.auto_reply') !== true) {
-            return;
-        }
-
         $thread = DB::table('cv_messages as inbound')
             ->join('cv_conversations as thread', 'thread.id', '=', 'inbound.conversation_id')
             ->join('cv_contact_identities as identity', 'identity.id', '=', 'thread.contact_identity_id')
@@ -53,7 +50,7 @@ class ReplyToConverseTurn implements ShouldQueue
         }
 
         $settings = $configuration->channel((int) $thread->account_id);
-        if (($settings['enabled'] ?? false) !== true
+        if (($settings['enabled'] ?? false) !== true || ! $send->autoReplyEnabled((int) $thread->account_id)
             || DB::table('cv_ai_turns')->where('inbound_message_id', $this->inboundMessageId)->exists()) {
             return;
         }
@@ -85,22 +82,23 @@ class ReplyToConverseTurn implements ShouldQueue
         }
 
         $operationId = (string) Str::uuid();
-        $claimed = DB::transaction(function () use ($thread, $operationId, $reply, $scope, $tag, $history): ?bool {
+        $decision = DB::transaction(function () use ($thread, $operationId, $reply, $scope, $tag, $history, $review, $send): ?string {
             $conversation = DB::table('cv_conversations')->where('id', $thread->id)->lockForUpdate()
                 ->first(['mode', 'status', 'knowledge_scope_mode', 'knowledge_collection_ids']);
             $latest = DB::table('cv_messages')->where('conversation_id', $thread->id)->where('direction', 'in')
                 ->orderByDesc('occurred_at')->orderByDesc('id')->value('id');
             if ($conversation?->mode !== 'ai' || ! in_array($conversation->status, ['open', 'pending'], true)
-                || (int) $latest !== $this->inboundMessageId) {
-                return false;
+                || (int) $latest !== $this->inboundMessageId || ! $send->autoReplyEnabled((int) $thread->account_id)) {
+                return 'ignored';
             }
             if ($conversation->knowledge_scope_mode !== $thread->knowledge_scope_mode
                 || $conversation->knowledge_collection_ids !== $thread->knowledge_collection_ids) {
                 return null;
             }
+            $decision = $reply['decision'] === 'handoff' ? 'queued' : 'send';
             $claimed = DB::table('cv_ai_turns')->insertOrIgnore([
                 'inbound_message_id' => $this->inboundMessageId, 'operation_id' => $operationId,
-                'language' => $reply['language'], 'intent' => $reply['intent'], 'decision' => $reply['decision'],
+                'language' => $reply['language'], 'intent' => $reply['intent'], 'decision' => $decision,
                 'source_ids' => json_encode($reply['source_ids'], JSON_THROW_ON_ERROR),
                 'knowledge_scope' => json_encode($scope, JSON_THROW_ON_ERROR),
                 'created_at' => now(), 'provider' => $reply['provider'] ?? null, 'model' => $reply['model'] ?? null,
@@ -117,21 +115,26 @@ class ReplyToConverseTurn implements ShouldQueue
                     }
                 }
                 $tag((int) $thread->id, $history->last()->body, $scope);
+                if ($decision === 'queued'
+                    && $review->record((int) $thread->id, $this->inboundMessageId, $thread->occurred_at, 'unanswered')) {
+                    DB::table('cv_ai_turns')->where('inbound_message_id', $this->inboundMessageId)->update(['decision' => 'handoff']);
+                    $decision = 'handoff';
+                }
             }
 
-            return $claimed > 0;
+            return $claimed ? $decision : 'ignored';
         }, attempts: 3);
-        if ($claimed === null) {
+        if ($decision === null) {
             $this->release(1);
 
             return;
         }
-        if (! $claimed) {
+        if (! in_array($decision, ['send', 'handoff'], true)) {
             return;
         }
         foreach ($reply['messages'] ?? [$reply['body']] as $index => $body) {
             $partId = $index === 0 ? $operationId : Uuid::uuid5($operationId, (string) $index)->toString();
-            if (! $send->automatic((int) $thread->id, $this->inboundMessageId, $partId, $body, $reply['decision'] === 'handoff',
+            if (! $send->automatic((int) $thread->id, $this->inboundMessageId, $partId, $body, $decision === 'handoff',
                 $index === 0 ? ($reply['asset_id'] ?? null) : null, $reply['asset_collections'] ?? [], $reply['asset_agent'] ?? null,
                 $scope['collection_ids'])) {
                 break;

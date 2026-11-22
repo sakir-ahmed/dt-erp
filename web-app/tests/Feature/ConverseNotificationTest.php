@@ -2,6 +2,7 @@
 
 use App\Actions\RecordConverseInboundMessage;
 use App\Actions\SendConverseReply;
+use App\Actions\WorkspaceSettings;
 use App\Jobs\ReplyToConverseTurn;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
@@ -54,7 +55,7 @@ it('starts at the current cursor and reports only new, deduplicated, workspace-s
     $this->getJson($url.'?after='.$handoff->json('cursor'))->assertOk()->assertJsonCount(0, 'events');
 });
 
-it('records AI delivery only on a provider acknowledgement and a separate actual handoff', function (bool $accepted) {
+it('records AI delivery only on a provider acknowledgement and keeps delivery failures in review', function (bool $accepted) {
     $account = noticeAccount();
     config(['converse.ai.auto_reply' => true, 'converse.outbound_enabled' => true,
         'converse.ai.channels' => [$account => ['enabled' => true]]]);
@@ -64,14 +65,16 @@ it('records AI delivery only on a provider acknowledgement and a separate actual
     app(SendConverseReply::class)->automatic($thread, $message, (string) Str::uuid(), 'A grounded reply.', handoff: false);
 
     expect(DB::table('cv_notification_events')->orderBy('id')->pluck('type')->all())->toBe(
-        $accepted ? ['ai_inbound', 'ai_reply'] : ['ai_inbound', 'human_handoff'],
+        $accepted ? ['ai_inbound', 'ai_reply'] : ['ai_inbound'],
     );
+    $this->assertDatabaseCount('cv_ai_review_tasks', $accepted ? 0 : 1);
 })->with([true, false]);
 
 it('creates one durable automatic handoff for an unanswered question and acknowledges it per staff member', function () {
     $account = noticeAccount();
     config(['converse.ai.auto_reply' => true, 'converse.outbound_enabled' => true,
         'converse.ai.channels' => [$account => ['enabled' => true, 'collections' => []]]]);
+    app(WorkspaceSettings::class)->put('converse', ['daily_ai_failure_limit' => 1]);
     Http::fake(['https://graph.facebook.com/*' => Http::response(['message_id' => 'handoff-fixture'])]);
 
     $user = User::factory()->create()->assignRole('staff');
@@ -84,7 +87,8 @@ it('creates one durable automatic handoff for an unanswered question and acknowl
     app()->call([$job, 'handle']);
 
     $firstPoll = $this->getJson($url.'?after='.$baseline)->assertJsonCount(1, 'events')
-        ->assertJsonPath('events.0.type', 'human_handoff')->assertJsonCount(1, 'handoffs');
+        ->assertJsonPath('events.0.type', 'human_handoff')->assertJsonCount(1, 'handoffs')
+        ->assertJsonPath('handoffs.0.task_id', DB::table('cv_ai_review_tasks')->soleValue('id'));
     $notification = $firstPoll->json('events.0.id');
     $this->getJson($url.'?after='.$notification)->assertJsonCount(0, 'events')->assertJsonCount(1, 'handoffs');
     $this->getJson($url)->assertJsonCount(0, 'events')->assertJsonCount(1, 'handoffs');

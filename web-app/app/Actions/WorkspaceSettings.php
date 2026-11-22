@@ -23,6 +23,7 @@ class WorkspaceSettings
             // Handling mode assigned to conversations when they are created.
             'new_conversation_mode' => 'ai',
             'reply_language' => 'auto',
+            'daily_ai_failure_limit' => 5,
             // Channel types eligible for automatic replies unless a channel
             // account overrides this in the AI playground.
             'channel_types' => ['messenger' => true, 'whatsapp' => true],

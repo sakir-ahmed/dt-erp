@@ -14,6 +14,7 @@ const props = defineProps({
     modes: { type: Array, required: true },
     channelTypes: { type: Array, required: true },
     replyLanguages: { type: Array, required: true },
+    canConfigureReviewLimit: Boolean,
     aiProviders: { type: Array, required: true },
     converseAi: { type: Object, default: null },
 });
@@ -25,6 +26,7 @@ const converse = useForm({
     auto_reply: Boolean(props.converse.auto_reply),
     new_conversation_mode: props.converse.new_conversation_mode,
     reply_language: props.converse.reply_language,
+    ...(props.canConfigureReviewLimit ? { daily_ai_failure_limit: props.converse.daily_ai_failure_limit } : {}),
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(props.converse.channel_types?.[type])])),
 });
 const providerValues = () => Object.fromEntries(props.aiProviders.flatMap(({ id, enabled }) => [
@@ -62,6 +64,7 @@ watch(() => props.converse, (value) => converse.defaults({
     auto_reply: Boolean(value.auto_reply),
     new_conversation_mode: value.new_conversation_mode,
     reply_language: value.reply_language,
+    ...(props.canConfigureReviewLimit ? { daily_ai_failure_limit: value.daily_ai_failure_limit } : {}),
     channel_types: Object.fromEntries(props.channelTypes.map((type) => [type, Boolean(value.channel_types?.[type])])),
 }), { deep: true });
 </script>
@@ -105,6 +108,11 @@ watch(() => props.converse, (value) => converse.defaults({
                         </option>
                     </select>
                     <p :id="attrs.id + '-help'" class="mt-1 text-xs text-muted">{{ page.props.labels.settings_converse_reply_language_help }}</p>
+                </FormField>
+                <FormField v-if="canConfigureReviewLimit" v-slot="attrs" :label="page.props.labels.settings_daily_ai_failure_limit" :error="converse.errors.daily_ai_failure_limit">
+                    <input v-bind="attrs" v-model.number="converse.daily_ai_failure_limit" type="number" min="1" max="50" required class="ui-input max-w-32"
+                        :aria-describedby="[attrs['aria-describedby'], attrs.id + '-help'].filter(Boolean).join(' ')" />
+                    <p :id="attrs.id + '-help'" class="mt-1 text-xs text-muted">{{ page.props.labels.settings_daily_ai_failure_limit_help }}</p>
                 </FormField>
                 <fieldset class="grid gap-2">
                     <legend class="text-sm font-medium">{{ page.props.labels.settings_converse_channel_types }}</legend>

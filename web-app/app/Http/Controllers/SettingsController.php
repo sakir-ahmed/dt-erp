@@ -42,6 +42,7 @@ class SettingsController extends Controller
             'modes' => self::MODES,
             'channelTypes' => self::CHANNEL_TYPES,
             'replyLanguages' => WorkspaceSettings::CONVERSE_REPLY_LANGUAGES,
+            'canConfigureReviewLimit' => ! $request->user()->is_demo,
             'aiProviders' => $aiProviders,
             'converseAi' => $canConfigure ? [
                 'providerSettings' => $configuration->public(),
@@ -118,10 +119,12 @@ class SettingsController extends Controller
 
     public function updateConverse(Request $request, WorkspaceSettings $settings, RecordConverseAudit $audit): RedirectResponse
     {
+        abort_if($request->user()->is_demo && $request->has('daily_ai_failure_limit'), 403);
         $validated = $request->validate([
             'auto_reply' => ['required', 'boolean'],
             'new_conversation_mode' => ['required', 'string', 'in:'.implode(',', self::MODES)],
             'reply_language' => ['sometimes', 'required', 'string', Rule::in(WorkspaceSettings::CONVERSE_REPLY_LANGUAGES)],
+            'daily_ai_failure_limit' => ['sometimes', 'required', 'integer', 'between:1,50'],
             'channel_types' => ['required', 'array:'.implode(',', self::CHANNEL_TYPES)],
             'channel_types.*' => ['required', 'boolean'],
         ]);

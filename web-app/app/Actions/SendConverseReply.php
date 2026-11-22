@@ -16,19 +16,25 @@ use Illuminate\Validation\ValidationException;
 
 class SendConverseReply
 {
-    public function __construct(private ConverseAiSettings $aiSettings, private RecordConverseNotification $notifications, private ConverseOutboundAssets $assets, private SendConverseMedia $media, private WorkspaceSettings $workspaceSettings) {}
+    public function __construct(private ConverseAiSettings $aiSettings, private RecordConverseNotification $notifications, private ConverseOutboundAssets $assets, private SendConverseMedia $media, private WorkspaceSettings $workspaceSettings, private ConverseReviewQueue $review) {}
 
-    public function __invoke(User $user, int $conversation, string $operationId, string $body, ?UploadedFile $file = null, ?int $catalogAsset = null): string
+    public function __invoke(User $user, int $conversation, string $operationId, string $body, ?UploadedFile $file = null, ?int $catalogAsset = null, ?int $reviewTask = null): string
     {
-        $attempt = DB::transaction(function () use ($user, $conversation, $operationId, $body, $file, $catalogAsset): object {
+        $context = $reviewTask === null ? 'manual' : 'review';
+        $attempt = DB::transaction(function () use ($user, $conversation, $operationId, $body, $file, $catalogAsset, $reviewTask, $context): object {
             $thread = $this->thread($user, $conversation);
+            $taskQuery = $reviewTask === null ? null : DB::table('cv_ai_review_tasks')
+                ->where('id', $reviewTask)->where('conversation_id', $conversation);
+            $task = $taskQuery?->lockForUpdate()->first();
+            abort_if($reviewTask !== null && $task === null, 404);
             $existing = DB::table('cv_messages')->where('conversation_id', $conversation)
                 ->where('operation_id', $operationId)->first();
 
             if ($existing !== null) {
                 $digest = $existing->outbound_asset_id === null ? null
                     : $this->assets->forConversation((int) $existing->outbound_asset_id, $conversation, $user->id)?->digest;
-                if ($existing->body !== $body || (int) $existing->sent_by !== $user->id
+                if (($task !== null && (int) $task->reply_message_id !== (int) $existing->id)
+                    || $existing->body !== $body || (int) $existing->sent_by !== $user->id
                     || ($catalogAsset !== null ? (int) $existing->outbound_asset_id !== $catalogAsset
                         : ($existing->outbound_asset_id !== null && $digest === null)
                             || $digest !== ($file ? hash_file('sha256', $file->getPathname()) : null))) {
@@ -38,7 +44,16 @@ class SendConverseReply
                 return (object) ['id' => null, 'status' => $existing->delivery_status];
             }
 
-            if ($reason = $this->blockedReason($thread, $conversation)) {
+            $priorDelivery = $task?->reply_message_id === null ? null : DB::table('cv_messages')
+                ->where('id', $task->reply_message_id)->value('delivery_status');
+            $aiDelivery = $task?->ai_message_id === null ? null : DB::table('cv_messages')
+                ->where('id', $task->ai_message_id)->value('delivery_status');
+            if ($task !== null && ($task->closed_at !== null
+                || ($priorDelivery !== null && $priorDelivery !== 'failed') || ($aiDelivery !== null && $aiDelivery !== 'failed'))) {
+                throw ValidationException::withMessages(['body' => __('workspace.ai_review.reply_locked')]);
+            }
+
+            if ($reason = $this->blockedReason($thread, $conversation, context: $context)) {
                 throw ValidationException::withMessages(['body' => __('workspace.'.$reason)]);
             }
 
@@ -61,6 +76,7 @@ class SendConverseReply
                 'body' => $body,
                 'occurred_at' => now(),
             ]);
+            $taskQuery?->update(['reply_message_id' => $id]);
 
             return (object) ['id' => $id, 'status' => 'sending', 'asset' => $asset];
         }, attempts: 3);
@@ -70,7 +86,7 @@ class SendConverseReply
         }
 
         // The committed claim prevents replay after a timeout or a process interruption.
-        return DB::transaction(function () use ($attempt, $user, $conversation, $body, $operationId): string {
+        return DB::transaction(function () use ($attempt, $user, $conversation, $body, $operationId, $context, $reviewTask): string {
             $thread = $this->thread($user, $conversation);
             $status = 'failed';
             $externalId = $attachmentStatus = $attachmentId = null;
@@ -80,7 +96,10 @@ class SendConverseReply
                 $asset = $this->assets->catalog($this->aiSettings->channel((int) $thread->channel_account_id)['collections'] ?? [])
                     ->where('asset.id', $asset->id)->lockForUpdate()->first(['asset.*']);
             }
-            if ($this->blockedReason($thread, $conversation) === null && ($attempt->asset === null || $asset !== null)) {
+            $taskOpen = $reviewTask === null || DB::table('cv_ai_review_tasks')->where('id', $reviewTask)
+                ->where('reply_message_id', $attempt->id)->whereNull('closed_at')->exists();
+            if ($taskOpen && $this->blockedReason($thread, $conversation, context: $context) === null
+                && ($attempt->asset === null || $asset !== null)) {
                 try {
                     [$status, $externalId, $attachmentStatus, $attachmentId] = $this->send($thread, $body, $operationId, $asset);
                 } catch (ConnectionException) {
@@ -123,6 +142,9 @@ class SendConverseReply
                 'body' => $body, 'occurred_at' => now(),
             ]);
         });
+        if ($claim === null) {
+            return false;
+        }
 
         return DB::transaction(function () use ($claim, $conversation, $inboundId, $body, $handoff, $operationId, $assetId, $catalogScope, $catalogAgent, $knowledgeCollections): bool {
             $thread = $this->thread(null, $conversation);
@@ -142,7 +164,7 @@ class SendConverseReply
                 }
                 $eligible = $asset !== null && ! $handoff;
             }
-            if ($claim !== null && $eligible) {
+            if ($eligible) {
                 try {
                     [$status, $externalId, $attachmentStatus, $attachmentId] = $this->send($thread, $body, $operationId, $asset);
                 } catch (ConnectionException) {
@@ -152,12 +174,10 @@ class SendConverseReply
                 }
             }
 
-            if ($claim !== null) {
-                DB::table('cv_messages')->where('id', $claim)->where('delivery_status', 'sending')->update([
-                    'delivery_status' => $status, 'external_id' => $externalId,
-                    'attachment_status' => $attachmentStatus, 'attachment_external_id' => $attachmentId,
-                ]);
-            }
+            DB::table('cv_messages')->where('id', $claim)->where('delivery_status', 'sending')->update([
+                'delivery_status' => $status, 'external_id' => $externalId,
+                'attachment_status' => $attachmentStatus, 'attachment_external_id' => $attachmentId,
+            ]);
 
             if ($status === 'accepted') {
                 if (! $handoff) {
@@ -166,20 +186,12 @@ class SendConverseReply
                 $now = now();
                 DB::table('cv_conversations')->where('id', $conversation)->where('last_message_at', '<', $now)
                     ->update(['last_message_at' => $now, 'updated_at' => $now]);
+            } elseif ($eligible && ! $handoff) {
+                $occurredAt = DB::table('cv_messages')->where('id', $inboundId)->soleValue('occurred_at');
+                $this->review->record($conversation, $inboundId, $occurredAt, 'delivery', $claim);
             }
 
-            $latest = DB::table('cv_messages')->where('conversation_id', $conversation)->where('direction', 'in')
-                ->orderByDesc('occurred_at')->orderByDesc('id')->value('id');
-            if ($scopeAllowed && $this->autoReplyEnabled((int) $thread->channel_account_id) && $thread->enabled && $thread->opted_out_at === null
-                && $thread->mode === 'ai' && in_array($thread->status, ['open', 'pending'], true)
-                && (int) $latest === $inboundId && ($handoff || ($claim !== null && $status !== 'accepted'))) {
-                DB::table('cv_conversations')->where('id', $conversation)->update([
-                    'mode' => 'human', 'status' => 'pending', 'updated_at' => now(),
-                ]);
-                $this->notifications->humanHandoff($conversation);
-            }
-
-            return $claim !== null && $status === 'accepted';
+            return $status === 'accepted';
         });
     }
 
@@ -242,7 +254,7 @@ class SendConverseReply
             || array_diff($collections, json_decode($thread->knowledge_collection_ids ?? '[]', true, flags: JSON_THROW_ON_ERROR)) === [];
     }
 
-    private function autoReplyEnabled(int $accountId): bool
+    public function autoReplyEnabled(int $accountId): bool
     {
         $settings = $this->workspaceSettings->converse();
         if ($settings['auto_reply'] !== true) {
@@ -264,6 +276,11 @@ class SendConverseReply
     public function unavailableReason(User $user, int $conversation): ?string
     {
         return $this->blockedReason($this->thread($user, $conversation, lock: false), $conversation);
+    }
+
+    public function reviewUnavailableReason(User $user, int $conversation): ?string
+    {
+        return $this->blockedReason($this->thread($user, $conversation, lock: false), $conversation, context: 'review');
     }
 
     /**
@@ -357,12 +374,12 @@ class SendConverseReply
             return 'reply_whatsapp_invalid_recipient';
         }
 
-        // Broadcasts are explicitly chosen by staff; the handling mode must
-        // not veto them, but a resolved thread stays closed.
-        if ($context !== 'broadcast' && ($thread->mode !== ($automatic ? 'ai' : 'human') || $thread->status === 'resolved')) {
-            return 'reply_requires_human';
-        }
-        if ($context === 'broadcast' && $thread->status === 'resolved') {
+        $modeAllowsReply = match ($context) {
+            'broadcast' => true,
+            'review' => in_array($thread->mode, ['ai', 'human'], true),
+            default => $thread->mode === ($automatic ? 'ai' : 'human'),
+        };
+        if (! $modeAllowsReply || $thread->status === 'resolved') {
             return 'reply_requires_human';
         }
 

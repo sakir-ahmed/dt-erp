@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 
 class RecordConverseInboundMessage
 {
-    public function __construct(private RememberConverseConversation $memory, private RecordConverseNotification $notifications, private WorkspaceSettings $settings) {}
+    public function __construct(private RememberConverseConversation $memory, private RecordConverseNotification $notifications, private WorkspaceSettings $settings, private ConverseAiSettings $aiSettings) {}
 
     /**
      * Record a verified, normalized provider message within an existing channel account.
@@ -86,7 +86,9 @@ class RecordConverseInboundMessage
                 'occurred_at' => $occurredAt,
             ]);
 
-            DB::table('cv_conversations')->where('id', $conversationId)->where('last_message_at', '<', $occurredAt)
+            $conversation = DB::table('cv_conversations')->where('id', $conversationId);
+            $thread = $conversation->lockForUpdate()->first(['mode', 'status', 'last_message_at', 'resume_ai_on_inbound']);
+            (clone $conversation)->where('last_message_at', '<', $occurredAt)
                 ->update(['last_message_at' => $occurredAt, 'updated_at' => $now]);
 
             $this->memory->record((int) $conversationId, (int) $contactId, $body, $occurredAt);
@@ -99,7 +101,15 @@ class RecordConverseInboundMessage
                 ]);
             }
 
-            if (DB::table('cv_conversations')->where('id', $conversationId)->value('mode') === 'ai') {
+            $resumed = $thread->resume_ai_on_inbound && $thread->mode === 'human' && $thread->status === 'pending'
+                && ! $account->is_demo && trim($body) !== '' && Carbon::parse($thread->last_message_at)->lte($occurredAt)
+                && $this->settings->converse()['auto_reply'] && ($this->aiSettings->channel($accountId)['enabled'] ?? false)
+                && DB::table('cv_contacts')->where('id', $contactId)->whereNull('opted_out_at')->exists();
+            if ($resumed) {
+                $conversation->update(['mode' => 'ai', 'resume_ai_on_inbound' => false, 'updated_at' => $now]);
+            }
+
+            if ($resumed || $thread->mode === 'ai') {
                 $this->notifications->inboundWhileAi((int) $conversationId);
             }
 

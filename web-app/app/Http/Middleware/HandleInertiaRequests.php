@@ -25,6 +25,9 @@ class HandleInertiaRequests extends Middleware
             'canManageConverseKnowledge' => fn () => $request->user()?->can(WorkspacePermission::ManageConverseKnowledge->value) ?? false,
             'canManageConverseChannels' => fn () => $request->user()?->can(WorkspacePermission::ManageConverseChannels->value) ?? false,
             'canViewConverseInbox' => fn () => $request->user()?->can(WorkspacePermission::ViewConverseInbox->value) ?? false,
+            'canReviewConverseAi' => fn () => $request->user()?->can([
+                WorkspacePermission::ViewConverseInbox->value, WorkspacePermission::ManageConverseInbox->value,
+            ]) ?? false,
             'canViewUsers' => fn () => $request->user()?->can(WorkspacePermission::ViewUsers->value) ?? false,
             'canManageSettings' => fn () => $request->user()?->can(WorkspacePermission::ManageSettings->value) ?? false,
             'canViewConverseAiCalls' => fn () => $request->user() && ! $request->user()->is_demo

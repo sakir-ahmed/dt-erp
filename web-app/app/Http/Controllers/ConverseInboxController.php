@@ -248,13 +248,15 @@ class ConverseInboxController extends Controller
         $data = ['mode' => $input['mode'], 'status' => $input['status']];
 
         DB::transaction(function () use ($request, $conversation, $data, $audit, $notifications): void {
-            $thread = $this->scope($request)->where('conversations.id', $conversation)->lockForUpdate()->first();
+            $thread = $this->scope($request)->addSelect('conversations.resume_ai_on_inbound')
+                ->where('conversations.id', $conversation)->lockForUpdate()->first();
             abort_if($thread === null, 404);
 
             $previous = ['mode' => $thread->mode, 'status' => $thread->status];
-            if ($previous !== $data) {
-                DB::table('cv_conversations')->where('id', $conversation)->update([...$data, 'updated_at' => now()]);
-                if ($previous['mode'] !== 'human' && $data['mode'] === 'human') {
+            if ($previous !== $data || $thread->resume_ai_on_inbound) {
+                DB::table('cv_conversations')->where('id', $conversation)
+                    ->update([...$data, 'resume_ai_on_inbound' => false, 'updated_at' => now()]);
+                if (($previous['mode'] !== 'human' || $thread->resume_ai_on_inbound) && $data['mode'] === 'human') {
                     $notifications->humanHandoff($conversation, manual: true);
                 }
                 $audit($request->user()->id, 'conversation.updated', 'conversation', $conversation, ['from' => $previous, 'to' => $data]);

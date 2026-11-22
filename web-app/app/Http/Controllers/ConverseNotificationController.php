@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Actions\ConverseReviewQueue;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -9,15 +10,20 @@ use Illuminate\Support\Facades\DB;
 
 class ConverseNotificationController extends Controller
 {
-    public function __invoke(Request $request): JsonResponse
+    public function __invoke(Request $request, ConverseReviewQueue $queue): JsonResponse
     {
         $data = $request->validate(['after' => ['sometimes', 'integer', 'min:0']]);
         $stream = $this->stream($request);
         $pending = (clone $stream)->whereIn('event.type', ['human_handoff', 'manual_handoff'])
-            ->where('thread.mode', 'human')->where('thread.status', '!=', 'resolved')
+            ->leftJoin('cv_ai_review_tasks as task', 'task.notification_id', '=', 'event.id')
+            ->leftJoin('cv_messages as reply', 'reply.id', '=', 'task.reply_message_id')
+            ->leftJoin('cv_messages as ai_reply', 'ai_reply.id', '=', 'task.ai_message_id')
+            ->where(fn (Builder $query) => $query
+                ->where(fn (Builder $legacy) => $legacy->whereNull('task.id')->where('thread.mode', 'human')->where('thread.status', '!=', 'resolved'))
+                ->orWhere(fn (Builder $task) => $queue->pending($task->whereNotNull('task.id'))))
             ->whereNotExists(fn (Builder $ack) => $ack->from('cv_notification_acknowledgements')
                 ->whereColumn('notification_id', 'event.id')->where('user_id', $request->user()->id))
-            ->orderByDesc('event.id')->limit(20)->get(['event.id', 'event.type', 'event.conversation_id']);
+            ->orderByDesc('event.id')->limit(20)->get(['event.id', 'event.type', 'event.conversation_id', 'task.id as task_id']);
         if (! isset($data['after'])) {
             return response()->json(['cursor' => (int) $stream->max('event.id'), 'events' => [], 'handoffs' => $pending]);
         }

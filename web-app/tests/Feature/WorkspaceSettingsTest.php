@@ -43,6 +43,7 @@ it('shows settings to administrators only', function () {
         ->where('converse.auto_reply', true)
         ->where('converse.new_conversation_mode', 'ai')
         ->where('converse.reply_language', 'auto')
+        ->where('converse.daily_ai_failure_limit', 5)
         ->where('replyLanguages', ['auto', 'bn', 'en', 'mixed'])
         ->where('converse.channel_types.messenger', true)
         ->where('converse.channel_types.whatsapp', true));
@@ -78,6 +79,7 @@ it('gates automatic replies per channel type and lets playground channels overri
 
     // A channel configured in the AI playground overrides its type default.
     config(['converse.ai.channels' => [$messenger => ['enabled' => true]]]);
+    app(WorkspaceSettings::class)->put('converse', ['daily_ai_failure_limit' => 1]);
     app()->call([new ReplyToConverseTurn($message), 'handle']);
     $this->assertDatabaseHas('cv_messages', ['direction' => 'out', 'sender_type' => 'ai', 'external_id' => 'mid.settings']);
 });
@@ -107,12 +109,14 @@ it('persists settings through the admin form and audits the change', function ()
         'auto_reply' => true, 'new_conversation_mode' => 'human',
         'channel_types' => ['messenger' => true, 'whatsapp' => false],
         'reply_language' => 'mixed',
+        'daily_ai_failure_limit' => 4,
     ])->assertRedirect();
 
     $stored = DB::table('settings')->where('section', 'converse')->pluck('value', 'key');
-    expect($stored)->toHaveCount(4)
+    expect($stored)->toHaveCount(5)
         ->and(json_decode($stored['channel_types'], true))->toBe(['messenger' => true, 'whatsapp' => false])
-        ->and(json_decode($stored['reply_language'], true))->toBe('mixed');
+        ->and(json_decode($stored['reply_language'], true))->toBe('mixed')
+        ->and((int) json_decode($stored['daily_ai_failure_limit'], true))->toBe(4);
     $this->assertDatabaseHas('cv_audit_events', ['user_id' => $admin->id, 'action' => 'settings.updated']);
 
     $this->patch('/settings/application', ['default_locale' => 'bn'])->assertRedirect();
@@ -229,8 +233,15 @@ it('rejects invalid settings payloads', function () {
     $this->patch('/settings/converse', [
         'auto_reply' => 'yes', 'new_conversation_mode' => 'paused',
         'reply_language' => 'fr',
+        'daily_ai_failure_limit' => 0,
         'channel_types' => ['messenger' => true, 'whatsapp' => true],
-    ])->assertSessionHasErrors(['auto_reply', 'new_conversation_mode', 'reply_language']);
+    ])->assertSessionHasErrors(['auto_reply', 'new_conversation_mode', 'reply_language', 'daily_ai_failure_limit']);
     $this->patch('/settings/application', ['default_locale' => 'fr'])->assertSessionHasErrors(['default_locale']);
     Http::assertNothingSent();
+});
+
+it('keeps the live review limit out of demo settings writes', function () {
+    $this->actingAs(User::factory()->create(['is_demo' => true])->assignRole('administrator'))
+        ->patch(route('settings.converse.update'), ['daily_ai_failure_limit' => 1])->assertForbidden();
+    expect(app(WorkspaceSettings::class)->converse()['daily_ai_failure_limit'])->toBe(5);
 });

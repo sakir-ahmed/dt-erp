@@ -10,6 +10,7 @@ use App\Http\Controllers\ConverseKnowledgeController;
 use App\Http\Controllers\ConverseNotificationController;
 use App\Http\Controllers\ConverseOutboundAssetController;
 use App\Http\Controllers\ConversePlaygroundController;
+use App\Http\Controllers\ConverseReviewQueueController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\LocalQuickSignInController;
 use App\Http\Controllers\SessionController;
@@ -52,6 +53,14 @@ Route::middleware('auth')->group(function () {
     Route::post('/converse/inbox/notifications/{notification}/acknowledge', [ConverseNotificationController::class, 'acknowledge'])
         ->whereNumber('notification')->can(WorkspacePermission::ViewConverseInbox->value)
         ->name('converse.inbox.notifications.acknowledge');
+    Route::prefix('converse/review-queue')->name('converse.review.')
+        ->middleware(['can:'.WorkspacePermission::ViewConverseInbox->value, 'can:'.WorkspacePermission::ManageConverseInbox->value])
+        ->group(function () {
+            Route::get('/', [ConverseReviewQueueController::class, 'index'])->name('index');
+            Route::post('/{task}/reply', [ConverseReviewQueueController::class, 'reply'])->whereNumber('task')
+                ->middleware('throttle:30,1')->name('reply');
+            Route::patch('/{task}/close', [ConverseReviewQueueController::class, 'close'])->whereNumber('task')->name('close');
+        });
     Route::get('/converse/inbox/{conversation?}', ConverseInboxController::class)
         ->whereNumber('conversation')
         ->can(WorkspacePermission::ViewConverseInbox->value)
